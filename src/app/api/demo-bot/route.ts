@@ -196,6 +196,81 @@ export async function POST(request: NextRequest) {
       });
     }
 
+    if (action === 'open_gem_trade') {
+      const { signal } = body;
+      const allocationUsd = signal.suggestedDemoAllocationUsd || runtimePortfolio.allocationPerTradeUsd || 20;
+
+      // Auto-reload if cash is insufficient
+      if (runtimePortfolio.currentCash < allocationUsd) {
+        runtimePortfolio.currentCash = +(runtimePortfolio.currentCash + 100).toFixed(2);
+        runtimePortfolio.reloadCount += 1;
+        runtimePortfolio.totalDemoCapitalLoaded += 100;
+      }
+
+      runtimePortfolio.currentCash = +(runtimePortfolio.currentCash - allocationUsd).toFixed(2);
+
+      const entryPrice = signal.priceUsd || 0.001;
+      const tokenAmount = +(allocationUsd / entryPrice).toFixed(2);
+
+      const newPosition: DemoPosition = {
+        id: `pos-gem-${Date.now()}-${signal.tokenSymbol.toLowerCase()}`,
+        tokenAddress: signal.tokenAddress,
+        tokenSymbol: signal.tokenSymbol,
+        tokenName: signal.tokenName,
+        chain: 'solana',
+        copiedFromWallet: signal.smartWalletsDetected[0]?.address || 'Solana-Smart-Cluster',
+        copiedFromWalletLabel: signal.smartWalletsDetected[0]?.label || 'Gem Radar Cluster',
+        entryTimestamp: Date.now(),
+        entryPriceUsd: entryPrice,
+        currentPriceUsd: entryPrice,
+        investedUsd: allocationUsd,
+        tokenAmount,
+        pnlUsd: 0,
+        pnlPercent: 0,
+        takeProfitPrice1: +(entryPrice * 2.0).toFixed(6),
+        takeProfitPrice2: +(entryPrice * 5.0).toFixed(6),
+        stopLossPrice: +(entryPrice * 0.8).toFixed(6),
+        status: 'OPEN',
+        alphaScoreAtEntry: signal.breakoutProbability,
+        entryRationale: `[PRE-BREAKOUT GEM RADAR] ${signal.patternTitle}. ${signal.patternDescription}`,
+      };
+
+      runtimePositions.unshift(newPosition);
+
+      const openPositions = runtimePositions.filter((p) => p.status === 'OPEN');
+      const finalInvested = openPositions.reduce((acc, p) => acc + p.investedUsd, 0);
+      const finalMarketValue = openPositions.reduce((acc, p) => acc + (p.investedUsd + p.pnlUsd), 0);
+      runtimePortfolio.investedInPositionsUsd = +finalInvested.toFixed(2);
+      runtimePortfolio.totalUnrealizedPnlUsd = +(finalMarketValue - finalInvested).toFixed(2);
+      runtimePortfolio.totalEquityUsd = +(runtimePortfolio.currentCash + finalMarketValue).toFixed(2);
+
+      const entryLog: DecisionLog = {
+        id: `log-gem-entry-${Date.now()}`,
+        timestamp: Date.now(),
+        type: 'ENTRY_EXECUTED',
+        tokenSymbol: signal.tokenSymbol,
+        tokenAddress: signal.tokenAddress,
+        chain: 'solana',
+        triggeredByWallet: signal.smartWalletsDetected[0]?.address,
+        triggeredByWalletLabel: signal.smartWalletsDetected[0]?.label || 'Smart Money Cluster',
+        convictionScore: signal.breakoutProbability,
+        action: `BOUGHT $${allocationUsd} of ${signal.tokenSymbol} at $${entryPrice}`,
+        rationale: `Pattern: ${signal.patternTitle}. Odds: ${signal.breakoutProbability}%. Early ground-floor entry.`,
+        improvementLessonTag: '[PRE_BREAKOUT_GEM_ENTRY]',
+        improvementNote: `Capital efficiency test: entering before DEX trending to achieve 5x-20x multipliers.`,
+      };
+
+      runtimeLogs.unshift(entryLog);
+
+      return NextResponse.json({
+        success: true,
+        position: newPosition,
+        portfolio: runtimePortfolio,
+        positions: runtimePositions,
+        logs: runtimeLogs,
+      });
+    }
+
     return NextResponse.json({ success: false, error: 'Unknown action' }, { status: 400 });
   } catch (error: any) {
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });

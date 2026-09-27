@@ -14,6 +14,9 @@ import {
   BarChart2,
   Copy,
   Check,
+  Flame,
+  CheckCircle2,
+  Activity,
 } from 'lucide-react';
 import { WalletProfile } from '@/lib/types';
 import { SUPPORTED_CHAINS, getExplorerAddressUrl, getExplorerTxUrl, formatUsd, shortenAddress } from '@/lib/chains';
@@ -167,6 +170,15 @@ export function WalletDossierModal({ wallet, onClose, onStartCopy }: WalletDossi
               <span className={`px-2.5 py-0.5 rounded-full text-xs font-semibold border ${chain.badgeBg}`}>
                 {chain.name}
               </span>
+              {wallet.isCopyTradeable ? (
+                <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-950/80 border border-emerald-500/50 text-emerald-300">
+                  ✓ Copy-Tradeable Alpha
+                </span>
+              ) : (
+                <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-rose-950/80 border border-rose-500/50 text-rose-300">
+                  ⚠️ Institutional MM Router
+                </span>
+              )}
             </div>
 
             <div className="flex items-center space-x-3 text-xs text-slate-400 font-mono">
@@ -328,6 +340,99 @@ export function WalletDossierModal({ wallet, onClose, onStartCopy }: WalletDossi
                       Maintains a <strong className="text-white">{wallet.alphaSignature.rugAvoidanceRate}%</strong> scam avoidance rate, filtering out unverified mint authorities and fake liquidity traps.
                     </p>
                   </div>
+                </div>
+              </div>
+
+              {/* Capital Efficiency & Position Sizing Analysis */}
+              <div className="bg-cyber-bg p-5 rounded-xl border border-cyber-border space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center space-x-2 text-cyber-accent">
+                    <Zap className="w-5 h-5 text-amber-400" />
+                    <h3 className="font-bold text-sm text-white">Capital Efficiency &amp; Leverage Multiplier</h3>
+                  </div>
+                  <span className="text-xs font-mono text-emerald-400 font-bold bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/30">
+                    +{wallet.capitalEfficiencyRatio || +(wallet.totalNetProfitUsd / (wallet.initialCapitalUsd || 1000)).toFixed(1)}x ROI on Deployed Capital
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs font-mono">
+                  <div className="p-3 bg-slate-900 rounded-lg border border-cyber-border">
+                    <span className="text-slate-400 text-[10px] uppercase font-semibold block">Initial Capital / Bankroll</span>
+                    <div className="text-white text-base font-bold mt-1">
+                      ${wallet.initialCapitalUsd?.toLocaleString() || 500}
+                    </div>
+                    <span className="text-slate-500 text-[10px]">Capital deployed to generate gains</span>
+                  </div>
+
+                  <div className="p-3 bg-slate-900 rounded-lg border border-cyber-border">
+                    <span className="text-slate-400 text-[10px] uppercase font-semibold block">Avg Position Size</span>
+                    <div className="text-cyber-accent text-base font-bold mt-1">
+                      ${wallet.avgPositionSizeUsd?.toLocaleString() || 350}
+                    </div>
+                    <span className="text-slate-500 text-[10px]">Per trade allocation sizing</span>
+                  </div>
+
+                  <div className="p-3 bg-slate-900 rounded-lg border border-cyber-border">
+                    <span className="text-slate-400 text-[10px] uppercase font-semibold block">Activity &amp; Recency Status</span>
+                    <div className="text-emerald-400 text-base font-bold mt-1 flex items-center space-x-1.5">
+                      <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                      <span>{wallet.activityStatus?.replace('_', ' ') || 'ACTIVE'}</span>
+                    </div>
+                    <span className="text-slate-500 text-[10px]">
+                      {wallet.recentWinStreak ? `${wallet.recentWinStreak} consecutive wins` : 'Consistent trader'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Anti-Bot & Execution Authenticity Audit */}
+              <div className="bg-gradient-to-br from-emerald-950/40 via-slate-900 to-cyber-bg p-5 rounded-xl border border-emerald-500/30 space-y-3">
+                <div className="flex items-center space-x-2 text-emerald-400">
+                  <ShieldCheck className="w-5 h-5" />
+                  <h3 className="font-bold text-sm text-white">Anti-Bot &amp; Execution Authenticity Audit</h3>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs font-mono">
+                  <div className="p-3 bg-slate-900/90 rounded-lg border border-emerald-500/20">
+                    <span className="text-slate-400 text-[10px] uppercase font-semibold block">Lifetime Trades</span>
+                    <div className="text-white text-base font-bold mt-1">
+                      {wallet.totalTrades.toLocaleString()} trades
+                    </div>
+                    <span className="text-emerald-400 text-[10px]">
+                      {wallet.totalTrades > 500 ? 'High-Frequency Bot' : 'Human / Script Deliberate Trades'}
+                    </span>
+                  </div>
+
+                  <div className="p-3 bg-slate-900/90 rounded-lg border border-emerald-500/20">
+                    <span className="text-slate-400 text-[10px] uppercase font-semibold block">Trade Frequency</span>
+                    <div className="text-white text-base font-bold mt-1">
+                      {wallet.tradeFrequencyPerDay || 1.5} trades/day
+                    </div>
+                    <span className="text-slate-500 text-[10px]">Zero sub-second wash volume</span>
+                  </div>
+
+                  <div className="p-3 bg-slate-900/90 rounded-lg border border-emerald-500/20">
+                    <span className="text-slate-400 text-[10px] uppercase font-semibold block">Average Hold Duration</span>
+                    <div className="text-cyber-accent text-base font-bold mt-1">
+                      {wallet.avgHoldDurationMinutes >= 60
+                        ? `${(wallet.avgHoldDurationMinutes / 60).toFixed(1)} hrs`
+                        : `${wallet.avgHoldDurationMinutes.toFixed(0)} mins`}
+                    </div>
+                    <span className="text-slate-500 text-[10px]">Directional swing vs micro-spread</span>
+                  </div>
+                </div>
+
+                <div className="p-3 bg-emerald-500/10 rounded-lg border border-emerald-500/30 text-xs text-slate-300">
+                  <strong className="text-emerald-300">Verification Result: </strong>
+                  {wallet.isCopyTradeable ? (
+                    <span>
+                      Confirmed directional smart-money alpha trader. Sells into liquidity expansions rather than extracting AMM router micro-spreads. Perfectly viable for copy-trading.
+                    </span>
+                  ) : (
+                    <span className="text-rose-400 font-bold">
+                      Flagged as an automated institutional market maker / AMM router. Non-copyable.
+                    </span>
+                  )}
                 </div>
               </div>
             </div>

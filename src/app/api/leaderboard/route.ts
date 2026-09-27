@@ -7,11 +7,13 @@ export const dynamic = 'force-dynamic';
 export async function GET(request: NextRequest) {
   try {
     const searchParams = request.nextUrl.searchParams;
-    const chainParam = (searchParams.get('chain') || 'all') as ChainId | 'all';
+    const chainParam = (searchParams.get('chain') || 'solana') as ChainId | 'all';
     const timeframeParam = (searchParams.get('timeframe') || 'all') as '24h' | '7d' | '30d' | 'all';
-    const sortByParam = (searchParams.get('sortBy') || 'profit') as 'profit' | 'winrate' | 'alpha';
+    const sortByParam = (searchParams.get('sortBy') || 'dynamic') as 'dynamic' | 'capitalEfficiency' | 'profit' | 'winrate' | 'activity';
+    const excludeBots = searchParams.get('excludeBots') !== 'false';
+    const activityParam = (searchParams.get('activity') || 'all') as 'all' | 'hot' | 'active';
 
-    const wallets = getRankedWallets(chainParam, timeframeParam, sortByParam);
+    const wallets = getRankedWallets(chainParam, timeframeParam, sortByParam, excludeBots, activityParam);
 
     return NextResponse.json({
       success: true,
@@ -20,6 +22,8 @@ export async function GET(request: NextRequest) {
         chain: chainParam,
         timeframe: timeframeParam,
         sortBy: sortByParam,
+        excludeBots,
+        activity: activityParam,
         timestamp: Date.now(),
       },
       wallets,

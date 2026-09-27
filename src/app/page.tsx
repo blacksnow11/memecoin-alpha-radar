@@ -17,17 +17,18 @@ import {
 } from '@/lib/types';
 import { DEFAULT_DEMO_PORTFOLIO, INITIAL_DECISION_LOGS, INITIAL_OPEN_POSITIONS } from '@/lib/demo-trading-engine';
 import { SEED_WALLETS, getRankedWallets } from '@/lib/wallet-engine';
-import { Bot, CheckCircle, Zap } from 'lucide-react';
+import { GemRadarWidget } from '@/components/GemRadarWidget';
+import { Bot, CheckCircle, Zap, Radar } from 'lucide-react';
 
 export default function Home() {
-  const [activeTab, setActiveTab] = useState<'leaderboard' | 'demo' | 'logs'>('leaderboard');
+  const [activeTab, setActiveTab] = useState<'leaderboard' | 'radar' | 'demo' | 'logs'>('leaderboard');
   const [selectedChain, setSelectedChain] = useState<ChainId | 'all'>('solana');
   const [timeframe, setTimeframe] = useState<'24h' | '7d' | '30d' | 'all'>('all');
-  const [sortBy, setSortBy] = useState<'profit' | 'winrate' | 'alpha'>('profit');
+  const [sortBy, setSortBy] = useState<'dynamic' | 'capitalEfficiency' | 'profit' | 'winrate' | 'activity'>('dynamic');
 
   // Wallets data
   const [wallets, setWallets] = useState<WalletProfile[]>(() =>
-    getRankedWallets('solana', 'all', 'profit')
+    getRankedWallets('solana', 'all', 'dynamic')
   );
   const [selectedWallet, setSelectedWallet] = useState<WalletProfile | null>(null);
 
@@ -54,23 +55,24 @@ export default function Home() {
     setWallets(updated);
   }, [selectedChain, timeframe, sortBy]);
 
-  // Fetch demo state on boot
-  useEffect(() => {
-    async function loadDemoState() {
-      try {
-        const res = await fetch('/api/demo-bot');
-        const data = await res.json();
-        if (data.success) {
-          if (data.portfolio) setPortfolio(data.portfolio);
-          if (data.positions) setPositions(data.positions);
-          if (data.logs) setLogs(data.logs);
-        }
-      } catch (err) {
-        console.error('Failed to load demo bot state:', err);
+  // Fetch demo state
+  const loadDemoState = useCallback(async () => {
+    try {
+      const res = await fetch('/api/demo-bot');
+      const data = await res.json();
+      if (data.success) {
+        if (data.portfolio) setPortfolio(data.portfolio);
+        if (data.positions) setPositions(data.positions);
+        if (data.logs) setLogs(data.logs);
       }
+    } catch (err) {
+      console.error('Failed to load demo bot state:', err);
     }
-    loadDemoState();
   }, []);
+
+  useEffect(() => {
+    loadDemoState();
+  }, [loadDemoState]);
 
   // Autonomous bot tick dispatcher
   const handleTick = useCallback(async () => {
@@ -229,12 +231,18 @@ export default function Home() {
                   </span>
                 </h1>
                 <p className="text-xs text-slate-400 mt-1 max-w-2xl leading-relaxed">
-                  Every wallet is audited and ranked from <strong className="text-emerald-400">most profitable to least profitable</strong>.
-                  Inspect forensic proof charts, win rates, and holding patterns to mirror their highest-conviction trades.
+                  Every wallet is audited and ranked by <strong className="text-cyber-accent">Capital Efficiency (ROI)</strong>, <strong className="text-emerald-400">Win Rate</strong>, and <strong className="text-purple-400">Recency Velocity</strong>. Dormant wallets decay automatically so hot snipers rise to the top.
                 </p>
               </div>
 
               <div className="flex items-center space-x-3 shrink-0">
+                <button
+                  onClick={() => setActiveTab('radar')}
+                  className="px-4 py-2 rounded-xl text-xs font-bold bg-gradient-to-r from-purple-600 to-cyber-accent text-slate-950 hover:from-purple-500 hover:to-cyan-400 shadow-lg shadow-purple-500/20 flex items-center space-x-1.5 transition-all"
+                >
+                  <Radar className="w-4 h-4" />
+                  <span>Gem Radar Feed</span>
+                </button>
                 <button
                   onClick={() => setActiveTab('demo')}
                   className="px-4 py-2 rounded-xl text-xs font-bold bg-emerald-500 text-slate-950 hover:bg-emerald-400 shadow-lg shadow-emerald-500/20 flex items-center space-x-1.5 transition-all"
@@ -244,6 +252,9 @@ export default function Home() {
                 </button>
               </div>
             </div>
+
+            {/* Live Pre-Breakout Gem Radar Component */}
+            <GemRadarWidget onTradeExecuted={loadDemoState} />
 
             {/* Leaderboard Table */}
             <LeaderboardTable
@@ -255,6 +266,24 @@ export default function Home() {
               onSelectWallet={(w) => setSelectedWallet(w)}
               onQuickCopy={handleQuickCopy}
             />
+          </div>
+        )}
+
+        {activeTab === 'radar' && (
+          <div className="space-y-6">
+            <div className="bg-gradient-to-r from-purple-950/60 via-slate-900 to-cyber-card p-6 rounded-2xl border border-purple-500/30 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+              <div>
+                <h1 className="text-xl sm:text-2xl font-black text-white tracking-tight flex items-center space-x-2">
+                  <Radar className="w-6 h-6 text-purple-400 animate-pulse" />
+                  <span>Predictive Pre-Breakout Gem Radar</span>
+                </h1>
+                <p className="text-xs text-slate-400 mt-1 max-w-2xl leading-relaxed">
+                  Autonomous pattern recognition engine scanning Raydium CPMM, Pump.fun bonding curves, and Orca pools. Pinpoints memecoins experiencing smart money cluster accumulation before DEX trending algorithms flag them.
+                </p>
+              </div>
+            </div>
+
+            <GemRadarWidget onTradeExecuted={loadDemoState} />
           </div>
         )}
 

@@ -107,6 +107,20 @@ export interface WalletProfile {
   }>;
   multiplierDistribution: MultiplierDistribution;
   trades: Trade[];
+  walletCategory?: 'SMART_TRADER' | 'PRECISION_SNIPER' | 'SWING_WHALE' | 'MARKET_MAKER_ROUTER' | 'EXCHANGE_ROUTER';
+  isCopyTradeable?: boolean;
+  tradeStyle?: string;
+  tradeFrequencyPerDay?: number;
+  initialCapitalUsd?: number;
+  capitalEfficiencyRatio?: number; // e.g. 42.5 for 42.5x ROI on deployed capital
+  avgPositionSizeUsd?: number;
+  profitToCapitalMultiplier?: number;
+  lastActiveTimestamp?: number;
+  activityStatus?: 'HOT_ACTIVE' | 'WARM' | 'COOLING_OFF' | 'SLACKING_INACTIVE';
+  recentWinStreak?: number;
+  dynamicRankScore?: number;
+  rankTrend?: 'UP' | 'DOWN' | 'STABLE';
+  rankChange24h?: number;
 }
 
 export interface DemoPosition {
@@ -222,3 +236,39 @@ export interface DecisionLog {
   improvementLessonTag: string; // e.g. "[WIN: SNIPER_CONSENSUS]", "[LOSS: SLIPPAGE_FADE]"
   improvementNote: string;
 }
+
+export interface SmartWalletDetectorEvidence {
+  address: string;
+  label: string;
+  action: 'BUY' | 'ACCUMULATE' | 'SNIPE';
+  amountUsd: number;
+  timeAgo: string;
+  historicalWinRate: number;
+  capitalEfficiencyMultiplier: number;
+}
+
+export interface PreBreakoutGemSignal {
+  id: string;
+  tokenAddress: string;
+  tokenSymbol: string;
+  tokenName: string;
+  chain: ChainId;
+  priceUsd: number;
+  marketCapUsd: number;
+  liquidityUsd: number;
+  volume1hUsd: number;
+  volume5mUsd: number;
+  poolCreatedMinutesAgo: number;
+  breakoutProbability: number; // 0-100%
+  patternType: 'SMART_MONEY_CLUSTER' | 'GROUND_FLOOR_ACCUMULATION' | 'VOLUME_ACCELERATION' | 'PUMP_BONDING_BREAKOUT';
+  patternTitle: string;
+  patternDescription: string;
+  smartWalletsDetected: SmartWalletDetectorEvidence[];
+  entryWindow: 'EARLY_ACCUMULATION' | 'BREAKOUT_IMMINENT' | 'OPTIMAL_DIP';
+  suggestedDemoAllocationUsd: number;
+  confidenceScore: number;
+  detectedAt: number;
+  dex: string;
+  bondingCurvePercent?: number;
+}
+

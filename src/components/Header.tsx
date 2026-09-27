@@ -1,13 +1,13 @@
 'use client';
 
 import React from 'react';
-import { Activity, Shield, Zap, Search, Bot, ExternalLink, RefreshCw } from 'lucide-react';
+import { Activity, Shield, Zap, Search, Bot, ExternalLink, RefreshCw, Radar } from 'lucide-react';
 import { ChainId } from '@/lib/types';
 import { SUPPORTED_CHAINS } from '@/lib/chains';
 
 interface HeaderProps {
-  activeTab: 'leaderboard' | 'demo' | 'logs';
-  setActiveTab: (tab: 'leaderboard' | 'demo' | 'logs') => void;
+  activeTab: 'leaderboard' | 'radar' | 'demo' | 'logs';
+  setActiveTab: (tab: 'leaderboard' | 'radar' | 'demo' | 'logs') => void;
   selectedChain: ChainId | 'all';
   setSelectedChain: (chain: ChainId | 'all') => void;
   demoBalance: number;
@@ -102,6 +102,21 @@ export function Header({
           >
             <Activity className="w-3.5 h-3.5" />
             <span>Ranked Leaderboard</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('radar')}
+            className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center space-x-1.5 ${
+              activeTab === 'radar'
+                ? 'bg-gradient-to-r from-purple-600 to-cyber-accent text-slate-950 shadow-md font-bold'
+                : 'text-slate-400 hover:text-white hover:bg-slate-800/40'
+            }`}
+          >
+            <Radar className="w-3.5 h-3.5 text-purple-400" />
+            <span>Pre-Breakout Gem Radar</span>
+            <span className="px-1.5 py-0.2 rounded text-[9px] font-mono bg-purple-500/20 text-purple-300 border border-purple-500/40">
+              Pattern AI
+            </span>
           </button>
 
           <button
