@@ -132,7 +132,7 @@ export const FEATURED_MEMECOINS: Record<ChainId, Token[]> = {
       lpLockedPercent: 100,
     },
     {
-      address: '6p6xgHyF7AeQHyQTspauMtNs32REQuUn5_trump',
+      address: '6p6xgHyF7AeQHyQTspauMtNs32REQuUn5nW8421KDpump',
       symbol: 'TRUMP',
       name: 'Official Trump',
       chain: 'solana',

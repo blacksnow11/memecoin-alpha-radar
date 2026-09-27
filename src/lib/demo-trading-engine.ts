@@ -3,271 +3,38 @@ import { FEATURED_MEMECOINS } from './dexscreener';
 import { SEED_WALLETS } from './wallet-engine';
 import { fetchSolanaTokenPrice } from './solana/birdeye';
 
-// Initial Closed Trades History for the Autonomous Demo Bot (100% Solana Verified)
-export const INITIAL_CLOSED_TRADES: DemoClosedTrade[] = [
-  // --- Today's Trades (Sep 27, 2026) ---
-  {
-    id: 'closed-1',
-    tokenAddress: 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263',
-    tokenSymbol: 'BONK',
-    tokenName: 'Bonk',
-    chain: 'solana',
-    copiedFromWallet: 'MfDuWeqSHEqTFVYZ7LoexgAK9dxk7cy4DFJWjWMGVWa',
-    copiedFromWalletLabel: 'Raydium & WIF Volume Leader',
-    entryTimestamp: Date.now() - 3600000 * 5.5,
-    exitTimestamp: Date.now() - 3600000 * 2.2, // Today
-    holdDurationSeconds: 11880, // 3h 18m
-    entryPriceUsd: 0.0000108,
-    exitPriceUsd: 0.0000216,
-    entryMarketCap: 770000000,
-    exitMarketCap: 1540000000,
-    investedUsd: 20.00,
-    returnedUsd: 40.00,
-    netPnlUsd: 20.00,
-    netPnlPercent: 100.0,
-    multiplier: 2.0,
-    exitReason: 'TAKE_PROFIT',
-    exitReasonDetail: 'Take-Profit Level 1 Hit (+100% Target at $0.0000216 reached)',
-    alphaScoreAtEntry: 95,
-    entryRationale: 'Top #1 Solana Volume Leader (85.2% Win Rate) entered Raydium pool breakout. Deep liquidity ($28M pool).',
-    txHash: '4X3XikJQ4VfyNAigaMj1yzc3DyeieQmCkVaHMqzesxTnAgVn9H8EaLvfnF3UViqaaYTVBkpxbmDjSNiAbPnCPRXa',
-    simulatedGasFeeUsd: 0.005,
-  },
-  {
-    id: 'closed-2',
-    tokenAddress: '7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr',
-    tokenSymbol: 'POPCAT',
-    tokenName: 'Popcat',
-    chain: 'solana',
-    copiedFromWallet: 'CsVdJ8WH8Q9eHSTRpwtwN3TYApm24QnLKYUMNxJ3DaED',
-    copiedFromWalletLabel: 'High-Frequency Raydium Sniper',
-    entryTimestamp: Date.now() - 3600000 * 8.5,
-    exitTimestamp: Date.now() - 3600000 * 7.7, // Today
-    holdDurationSeconds: 2880, // 48 mins
-    entryPriceUsd: 1.25,
-    exitPriceUsd: 1.00,
-    entryMarketCap: 1250000000,
-    exitMarketCap: 1000000000,
-    investedUsd: 20.00,
-    returnedUsd: 16.00,
-    netPnlUsd: -4.00,
-    netPnlPercent: -20.0,
-    multiplier: 0.8,
-    exitReason: 'STOP_LOSS',
-    exitReasonDetail: 'Hard Stop-Loss Cut (-20.0% threshold triggered at $1.00)',
-    alphaScoreAtEntry: 88,
-    entryRationale: 'High-frequency sniper bought local breakout. Price dropped below VWAP support.',
-    txHash: '3wP9mN2qR4sT6uV8xY1a3cE5gH7jK9mB2dF4hJ6lN8pQ5eN1vL3kXbQz7R2mWs8p',
-    simulatedGasFeeUsd: 0.005,
-  },
+// Clean-slate Initial State for the Autonomous Demo Paper Trading Bot
+// Zero fake trades, zero simulated wins. Starts with pure $100.00 cash.
+export const INITIAL_CLOSED_TRADES: DemoClosedTrade[] = [];
+export const INITIAL_OPEN_POSITIONS: DemoPosition[] = [];
 
-  // --- Yesterday's Trade (Sep 26, 2026) ---
-  {
-    id: 'closed-3',
-    tokenAddress: '9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump',
-    tokenSymbol: 'FARTCOIN',
-    tokenName: 'Fartcoin',
-    chain: 'solana',
-    copiedFromWallet: '8fNpaxbJRyyKec7FNT3mC84Ca21umoU7ejd59LBZDZp9',
-    copiedFromWalletLabel: 'Pump.fun Curve Sniper Alpha',
-    entryTimestamp: Date.now() - 3600000 * 32.0,
-    exitTimestamp: Date.now() - 3600000 * 24.0, // Yesterday
-    holdDurationSeconds: 28800, // 8 hours
-    entryPriceUsd: 0.22,
-    exitPriceUsd: 0.3788,
-    entryMarketCap: 220000000,
-    exitMarketCap: 378800000,
-    investedUsd: 20.00,
-    returnedUsd: 34.44,
-    netPnlUsd: 14.44,
-    netPnlPercent: 72.2,
-    multiplier: 1.72,
-    exitReason: 'TAKE_PROFIT',
-    exitReasonDetail: 'DCA Scale-Out execution: Locked in +72.2% gain on bonding curve migration',
-    alphaScoreAtEntry: 96,
-    entryRationale: 'Top Pump.fun Curve Sniper (83.1% Win Rate) accumulated before Raydium migration.',
-    txHash: '27wQJHv1GtPiB773tLyUuugRkwG8TBRu6jp9ywkCRswKHpsTDdrV1UJQCGk2KGK7c6bBUtPBuMk7eqcnxeyv9zHM',
-    simulatedGasFeeUsd: 0.005,
-  },
-
-  // --- Earlier This Week (Sep 23, 2026 - 3.5 days ago) ---
-  {
-    id: 'closed-4',
-    tokenAddress: 'EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm',
-    tokenSymbol: 'WIF',
-    tokenName: 'dogwifhat',
-    chain: 'solana',
-    copiedFromWallet: 'MfDuWeqSHEqTFVYZ7LoexgAK9dxk7cy4DFJWjWMGVWa',
-    copiedFromWalletLabel: 'Raydium & WIF Volume Leader',
-    entryTimestamp: Date.now() - 3600000 * 90,
-    exitTimestamp: Date.now() - 3600000 * 84, // 3.5 days ago
-    holdDurationSeconds: 21600, // 6 hours
-    entryPriceUsd: 1.28,
-    exitPriceUsd: 2.24,
-    entryMarketCap: 1280000000,
-    exitMarketCap: 2240000000,
-    investedUsd: 20.00,
-    returnedUsd: 35.00,
-    netPnlUsd: 15.00,
-    netPnlPercent: 75.0,
-    multiplier: 1.75,
-    exitReason: 'TAKE_PROFIT',
-    exitReasonDetail: 'Scaled out 75% at local high breakout',
-    alphaScoreAtEntry: 98,
-    entryRationale: 'Top #1 Solana Sniper bought Raydium re-accumulation zone with $14M 24h volume surge.',
-    txHash: '5eN1vL3kXbQz7R2mWs8pY9cF1a4bT6hU8vJx2kM9qWeR3wP9mN2qR4sT6uV8xY1a',
-    simulatedGasFeeUsd: 0.005,
-  },
-
-  // --- Last Week (Sep 18, 2026 - 9 days ago) ---
-  {
-    id: 'closed-5',
-    tokenAddress: 'MEW1gQWJ3nEXg2qgERiKu7FAFj79PHvQVREQUzScPP5',
-    tokenSymbol: 'MEW',
-    tokenName: 'cat in a dogs world',
-    chain: 'solana',
-    copiedFromWallet: 'CreQJ2t94QK5dsxUZGXfPJ8Nx7wA9LHr5chxjSMkbNft',
-    copiedFromWalletLabel: 'Orca & Raydium Swing Whale',
-    entryTimestamp: Date.now() - 3600000 * 224,
-    exitTimestamp: Date.now() - 3600000 * 218, // 9 days ago
-    holdDurationSeconds: 21600, // 6 hours
-    entryPriceUsd: 0.0090,
-    exitPriceUsd: 0.0072,
-    entryMarketCap: 800000000,
-    exitMarketCap: 640000000,
-    investedUsd: 20.00,
-    returnedUsd: 16.00,
-    netPnlUsd: -4.00,
-    netPnlPercent: -20.0,
-    multiplier: 0.80,
-    exitReason: 'STOP_LOSS',
-    exitReasonDetail: 'Automated Stop-Loss Triggered (-20.0%) during market-wide flush',
-    alphaScoreAtEntry: 87,
-    entryRationale: 'Swing whale added to Orca Whirlpool, but overall market had high volatility spike.',
-    txHash: '4X3XikJQ4VfyNAigaMj1yzc3DyeieQmCkVaHMqzesxTnAgVn9H8EaLvfnF3UViqa',
-    simulatedGasFeeUsd: 0.005,
-  },
-
-  // --- Earlier This Month (Sep 05, 2026 - 22 days ago) ---
-  {
-    id: 'closed-6',
-    tokenAddress: '6p6xgHyF7AeQHyQTspauMtNs32REQuUn5_trump',
-    tokenSymbol: 'TRUMP',
-    tokenName: 'Official Trump',
-    chain: 'solana',
-    copiedFromWallet: '8fNpaxbJRyyKec7FNT3mC84Ca21umoU7ejd59LBZDZp9',
-    copiedFromWalletLabel: 'Pump.fun Curve Sniper Alpha',
-    entryTimestamp: Date.now() - 3600000 * 534,
-    exitTimestamp: Date.now() - 3600000 * 524, // 22 days ago
-    holdDurationSeconds: 36000, // 10 hours
-    entryPriceUsd: 10.00,
-    exitPriceUsd: 18.00,
-    entryMarketCap: 500000000,
-    exitMarketCap: 900000000,
-    investedUsd: 20.00,
-    returnedUsd: 36.00,
-    netPnlUsd: 16.00,
-    netPnlPercent: 80.0,
-    multiplier: 1.80,
-    exitReason: 'TAKE_PROFIT',
-    exitReasonDetail: 'Target 1.8x reached on Raydium liquidity pump',
-    alphaScoreAtEntry: 93,
-    entryRationale: 'Top Solana sniper accumulated in Raydium pool. Verified 0% tax contract.',
-    txHash: '3wP9mN2qR4sT6uV8xY1a3cE5gH7jK9mB2dF4hJ6lN8pQ',
-    simulatedGasFeeUsd: 0.005,
-  },
-];
-
-// Seed Open Positions (100% Real Solana Tokens)
-export const INITIAL_OPEN_POSITIONS: DemoPosition[] = [
-  {
-    id: 'pos-1',
-    tokenAddress: '9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump',
-    tokenSymbol: 'FARTCOIN',
-    tokenName: 'Fartcoin',
-    chain: 'solana',
-    copiedFromWallet: '8fNpaxbJRyyKec7FNT3mC84Ca21umoU7ejd59LBZDZp9',
-    copiedFromWalletLabel: 'Pump.fun Curve Sniper Alpha',
-    entryTimestamp: Date.now() - 3600000 * 3.0,
-    entryPriceUsd: 0.384,
-    currentPriceUsd: 0.442,
-    investedUsd: 20.00,
-    tokenAmount: 52.08,
-    pnlUsd: 3.02,
-    pnlPercent: 15.1,
-    takeProfitPrice1: 0.768, // 2x
-    takeProfitPrice2: 1.92, // 5x
-    stopLossPrice: 0.3072, // -20%
-    status: 'OPEN',
-    alphaScoreAtEntry: 96,
-    entryRationale: 'Top #3 Ranked Solana Sniper initiated early snipe. Deep pool ($12.4M liquidity).',
-  },
-  {
-    id: 'pos-2',
-    tokenAddress: '7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr',
-    tokenSymbol: 'POPCAT',
-    tokenName: 'Popcat',
-    chain: 'solana',
-    copiedFromWallet: 'CsVdJ8WH8Q9eHSTRpwtwN3TYApm24QnLKYUMNxJ3DaED',
-    copiedFromWalletLabel: 'High-Frequency Raydium Sniper',
-    entryTimestamp: Date.now() - 3600000 * 1.5,
-    entryPriceUsd: 1.24,
-    currentPriceUsd: 1.314,
-    investedUsd: 20.00,
-    tokenAmount: 16.13,
-    pnlUsd: 1.20,
-    pnlPercent: 6.0,
-    takeProfitPrice1: 2.48, // 2x
-    takeProfitPrice2: 6.20, // 5x
-    stopLossPrice: 0.992, // -20%
-    status: 'OPEN',
-    alphaScoreAtEntry: 92,
-    entryRationale: 'Top Raydium Sniper added to Raydium pool. Strong volume surge ($96M 24h).',
-  },
-];
-
-// Initial default state for the Autonomous Demo Paper Trading Bot
-// Formulated with strict mathematical balancing:
-// Total Capital Deposited = $100.00
-// Realized P&L from Closed Trades = +$20.00 - $4.00 + $14.44 + $15.00 - $4.00 + $16.00 = +$57.44
-// Invested in 2 Open Positions = $20.00 + $20.00 = $40.00
-// Available Free Cash = $100.00 (base) + $57.44 (realized gains) - $40.00 (invested) = $117.44
-// Open Positions Market Value = $23.02 + $21.20 = $44.22 (Unrealized P&L: +$4.22)
-// Total Portfolio Equity = $117.44 (cash) + $44.22 (positions) = $161.66
-// Total Net Gain = $161.66 - $100.00 = +$61.66 (+61.7%)
 export const DEFAULT_DEMO_PORTFOLIO: DemoPortfolio = {
-  startingCash: 100,
-  currentCash: 117.44, // Exactly $100 + $57.44 realized - $40 invested
-  investedInPositionsUsd: 40.00,
-  totalEquityUsd: 161.66,
-  totalRealizedPnlUsd: 57.44,
-  totalUnrealizedPnlUsd: 4.22,
-  totalWins: 4,
-  totalLosses: 2,
-  winRate: 66.7,
+  startingCash: 100.00,
+  currentCash: 100.00,
+  investedInPositionsUsd: 0.00,
+  totalEquityUsd: 100.00,
+  totalRealizedPnlUsd: 0.00,
+  totalUnrealizedPnlUsd: 0.00,
+  totalWins: 0,
+  totalLosses: 0,
+  winRate: 0,
   reloadCount: 0,
-  totalDemoCapitalLoaded: 100,
+  totalDemoCapitalLoaded: 100.00,
   isAutoReloadEnabled: true,
   isBotRunning: true,
-  minConvictionThreshold: 80, // High conviction bar: only trade high-probability setups!
-  allocationPerTradeUsd: 20, // $20 per trade
+  minConvictionThreshold: 80,
+  allocationPerTradeUsd: 20,
   maxConcurrentPositions: 4,
-  stopLossPercent: -20, // -20% stop loss
+  stopLossPercent: -20,
   takeProfitTargets: [
-    { targetMultiplier: 2.0, sellPercent: 50 }, // Take 50% at 2x
-    { targetMultiplier: 5.0, sellPercent: 30 }, // Take 30% at 5x
-    { targetMultiplier: 10.0, sellPercent: 20 }, // Let 20% moonbag run
+    { targetMultiplier: 2.0, sellPercent: 50 },
+    { targetMultiplier: 5.0, sellPercent: 30 },
+    { targetMultiplier: 10.0, sellPercent: 20 },
   ],
   equityHistory: [
-    { timestamp: Date.now() - 3600000 * 24 * 22, equityUsd: 100.00 },
-    { timestamp: Date.now() - 3600000 * 24 * 10, equityUsd: 116.00 },
-    { timestamp: Date.now() - 3600000 * 24 * 4, equityUsd: 112.00 },
-    { timestamp: Date.now() - 3600000 * 24 * 2, equityUsd: 127.00 },
-    { timestamp: Date.now() - 3600000 * 12, equityUsd: 141.44 },
-    { timestamp: Date.now() - 3600000 * 4, equityUsd: 137.44 },
-    { timestamp: Date.now(), equityUsd: 161.66 },
+    { timestamp: Date.now(), equityUsd: 100.00 },
   ],
-  closedTrades: INITIAL_CLOSED_TRADES,
+  closedTrades: [],
 };
 
 // ==========================================
@@ -520,69 +287,23 @@ export function filterTradesByTimeframe(
   });
 }
 
-// Seed Decision Logs strictly for Solana memecoins
+// Clean-slate Initial Decision Logs strictly for Solana memecoins
 export const INITIAL_DECISION_LOGS: DecisionLog[] = [
   {
-    id: 'log-seed-1',
-    timestamp: Date.now() - 3600000 * 3,
-    type: 'ENTRY_EXECUTED',
-    tokenSymbol: 'FARTCOIN',
-    tokenAddress: '9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump',
+    id: 'log-boot-solana',
+    timestamp: Date.now(),
+    type: 'EVALUATION_PASS',
+    tokenSymbol: 'SOL',
+    tokenAddress: 'So11111111111111111111111111111111111111112',
     chain: 'solana',
-    triggeredByWallet: '8fNpaxbJRyyKec7FNT3mC84Ca21umoU7ejd59LBZDZp9',
-    triggeredByWalletLabel: 'Pump.fun Curve Sniper Alpha',
-    convictionScore: 96,
-    action: 'BUY 52.08 FARTCOIN for $20.00 at $0.384',
-    rationale: 'Top #3 Solana Sniper (83.1% Win Rate, $984k P&L) initiated an early snipe. Liquidity: $12.4M (100% locked). Security check passed (0/0 tax, unblacklisted). Volume momentum +42.6% in 24h.',
-    improvementLessonTag: '[WIN: SNIPER_CONSENSUS]',
-    improvementNote: 'Entering within 30s of top sniper confirmation produced immediate positive price drift. Keep position sizing aligned with pool liquidity.',
-  },
-  {
-    id: 'log-seed-2',
-    timestamp: Date.now() - 3600000 * 2.2,
-    type: 'EXIT_TAKE_PROFIT',
-    tokenSymbol: 'BONK',
-    tokenAddress: 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263',
-    chain: 'solana',
-    triggeredByWallet: 'MfDuWeqSHEqTFVYZ7LoexgAK9dxk7cy4DFJWjWMGVWa',
-    triggeredByWalletLabel: 'Raydium & WIF Volume Leader',
-    convictionScore: 95,
-    action: 'TAKE PROFIT (Target 1: +100%) - Sold BONK at $0.0000216',
-    rationale: 'Automated Take-Profit rule triggered at 2.0x target ($0.0000216). Initial $20 returned $40 (+100.0%). Solscan tx verified.',
-    outcomePnlUsd: 20.00,
-    outcomePnlPercent: 100,
-    improvementLessonTag: '[WIN: DISCIPLINED_SCALE_OUT]',
-    improvementNote: 'De-risking at 2x protected capital while leaving upside exposure. Avoid holding 100% through local blow-off tops.',
-  },
-  {
-    id: 'log-seed-3',
-    timestamp: Date.now() - 3600000 * 1.5,
-    type: 'ENTRY_EXECUTED',
-    tokenSymbol: 'POPCAT',
-    tokenAddress: '7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr',
-    chain: 'solana',
-    triggeredByWallet: 'CsVdJ8WH8Q9eHSTRpwtwN3TYApm24QnLKYUMNxJ3DaED',
-    triggeredByWalletLabel: 'High-Frequency Raydium Sniper',
-    convictionScore: 92,
-    action: 'BUY 16.13 POPCAT for $20.00 at $1.24',
-    rationale: 'Top Raydium Sniper (81.4% Win Rate, $1.25M P&L) added to Raydium pool. Deep pool ($18.9M liquidity). 0% tax, verified Solana token.',
-    improvementLessonTag: '[WIN: SOLANA_MOMENTUM]',
-    improvementNote: 'Solana priority fee was $0.005, allowing sub-second execution without high gas drag.',
-  },
-  {
-    id: 'log-seed-4',
-    timestamp: Date.now() - 3600000 * 0.8,
-    type: 'EVALUATION_REJECT',
-    tokenSymbol: 'RUGPUPPY',
-    tokenAddress: '3mK8s...fake',
-    chain: 'solana',
-    convictionScore: 42,
-    action: 'REJECTED TRADE OPPORTUNITY',
-    rationale: 'Rejected trade despite sudden 80% volume spike. Failure triggers: 1) Mint authority still active, 2) Only 1 unranked wallet bought, 3) LP was only $4,200. Security threshold failed (<80).',
-    improvementLessonTag: '[AVOIDED: HONEYPOT_RISK]',
-    improvementNote: 'Pre-flight security check successfully prevented entering an unverified mint authority liquidity pull.',
+    convictionScore: 100,
+    action: 'INITIALIZED $100.00 DEMO BANKROLL (CLEAN SLATE)',
+    rationale: 'Autonomous bot started with clean $100.00 cash balance. Zero pre-seeded trades. Actively scanning live Solana DEX pools.',
+    improvementLessonTag: '[BOOT_CLEAN_SLATE]',
+    improvementNote: 'All trades, P&L, and logs will be recorded in real-time as the bot runs live on Solana DEXes.',
   },
 ];
+
 
 // Evaluates an incoming trade or token to compute algorithmic conviction
 export function evaluateAlphaConviction(
