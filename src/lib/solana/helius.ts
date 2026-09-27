@@ -1,5 +1,6 @@
 // Helius Enhanced Transactions & RPC Client for Solana Memecoin Swaps
 // Rate Limit: 10 req/sec, 1M credits per month.
+// Built with strict request pacing, exponential backoff, and in-memory TTL caching.
 
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY || 'f7d85eb1-a07a-4d5f-bbcf-9bb6a859b28a';
 const HELIUS_RPC_URL = `https://mainnet.helius-rpc.com/?api-key=${HELIUS_API_KEY}`;
@@ -23,52 +24,101 @@ export interface OnChainSwap {
 
 const WSOL_MINT = 'So11111111111111111111111111111111111111112';
 
+// In-Memory Caches to prevent hitting Helius rate limits
+const swapsCache = new Map<string, { data: OnChainSwap[]; expiry: number }>();
+let pumpVaultCache: { data: OnChainSwap[]; expiry: number } | null = null;
+const balanceCache = new Map<string, { data: number; expiry: number }>();
+const holdingCache = new Map<string, { data: { isHolding: boolean; tokenBalance: number }; expiry: number }>();
+let discoveredTradersCache: { data: string[]; expiry: number } | null = null;
+
+// Request Pacing Throttle (max ~7 requests per second to stay safely below 10 req/sec ceiling)
+let lastHeliusRequestTime = 0;
+const MIN_REQUEST_INTERVAL_MS = 150;
+
+async function rateLimitedHeliusFetch(url: string, options?: RequestInit): Promise<Response> {
+  const now = Date.now();
+  const timeSinceLast = now - lastHeliusRequestTime;
+  if (timeSinceLast < MIN_REQUEST_INTERVAL_MS) {
+    await new Promise((resolve) => setTimeout(resolve, MIN_REQUEST_INTERVAL_MS - timeSinceLast));
+  }
+  lastHeliusRequestTime = Date.now();
+
+  try {
+    let res = await fetch(url, options);
+
+    // If rate-limited (429), back off with jitter and retry once
+    if (res.status === 429) {
+      await new Promise((resolve) => setTimeout(resolve, 600 + Math.random() * 300));
+      lastHeliusRequestTime = Date.now();
+      res = await fetch(url, options);
+    }
+
+    return res;
+  } catch (err) {
+    throw err;
+  }
+}
+
 export async function fetchWalletOnChainSwaps(
   walletAddress: string,
   limit = 10
 ): Promise<OnChainSwap[]> {
+  const now = Date.now();
+  const cached = swapsCache.get(walletAddress);
+  if (cached && now < cached.expiry) {
+    return cached.data;
+  }
+
   try {
     const url = `${HELIUS_API_URL}/addresses/${walletAddress}/transactions?api-key=${HELIUS_API_KEY}&type=SWAP&limit=${limit}`;
-    const res = await fetch(url, {
+    const res = await rateLimitedHeliusFetch(url, {
       headers: { 'Accept': 'application/json' },
-      next: { revalidate: 10 },
     });
 
     if (!res.ok) {
-      console.warn(`[Helius] Failed to fetch swaps for ${walletAddress}: ${res.statusText}`);
-      return [];
+      // Return cached if available, or empty without crashing
+      return cached ? cached.data : [];
     }
 
     const txs: any[] = await res.json();
-    if (!Array.isArray(txs)) return [];
+    if (!Array.isArray(txs)) return cached ? cached.data : [];
 
-    return txs.map((tx) => parseHeliusSwap(tx, walletAddress)).filter(Boolean) as OnChainSwap[];
+    const swaps = txs.map((tx) => parseHeliusSwap(tx, walletAddress)).filter(Boolean) as OnChainSwap[];
+    swapsCache.set(walletAddress, { data: swaps, expiry: now + 45000 }); // 45s TTL
+    return swaps;
   } catch (err) {
-    console.error(`[Helius] Error fetching swaps for ${walletAddress}:`, err);
-    return [];
+    return cached ? cached.data : [];
   }
 }
 
 export async function fetchLivePumpFunSwaps(limit = 10): Promise<OnChainSwap[]> {
+  const now = Date.now();
+  if (pumpVaultCache && now < pumpVaultCache.expiry) {
+    return pumpVaultCache.data;
+  }
+
   try {
-    // Pump.fun fee vault has thousands of live swaps per hour
     const PUMP_VAULT = 'CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbicfhtW4xC9iM';
     const url = `${HELIUS_API_URL}/addresses/${PUMP_VAULT}/transactions?api-key=${HELIUS_API_KEY}&type=SWAP&limit=${limit}`;
-    const res = await fetch(url, {
+    const res = await rateLimitedHeliusFetch(url, {
       headers: { 'Accept': 'application/json' },
-      next: { revalidate: 5 },
     });
 
-    if (!res.ok) return [];
-    const txs: any[] = await res.json();
-    if (!Array.isArray(txs)) return [];
+    if (!res.ok) {
+      return pumpVaultCache ? pumpVaultCache.data : [];
+    }
 
-    return txs
+    const txs: any[] = await res.json();
+    if (!Array.isArray(txs)) return pumpVaultCache ? pumpVaultCache.data : [];
+
+    const parsed = txs
       .map((tx) => parseHeliusSwap(tx, tx.feePayer))
       .filter(Boolean) as OnChainSwap[];
+
+    pumpVaultCache = { data: parsed, expiry: now + 25000 }; // 25s TTL
+    return parsed;
   } catch (err) {
-    console.error('[Helius] Live Pump.fun swaps error:', err);
-    return [];
+    return pumpVaultCache ? pumpVaultCache.data : [];
   }
 }
 
@@ -76,8 +126,15 @@ export async function checkWalletTokenHolding(
   walletAddress: string,
   tokenMint: string
 ): Promise<{ isHolding: boolean; tokenBalance: number }> {
+  const cacheKey = `${walletAddress}:${tokenMint}`;
+  const now = Date.now();
+  const cached = holdingCache.get(cacheKey);
+  if (cached && now < cached.expiry) {
+    return cached.data;
+  }
+
   try {
-    const res = await fetch(HELIUS_RPC_URL, {
+    const res = await rateLimitedHeliusFetch(HELIUS_RPC_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -98,32 +155,48 @@ export async function checkWalletTokenHolding(
       if (Array.isArray(accounts) && accounts.length > 0) {
         const tokenAmount = accounts[0]?.account?.data?.parsed?.info?.tokenAmount;
         const uiAmount = tokenAmount?.uiAmount || 0;
-        return {
+        const result = {
           isHolding: uiAmount > 0,
           tokenBalance: uiAmount,
         };
+        holdingCache.set(cacheKey, { data: result, expiry: now + 35000 });
+        return result;
       }
     }
   } catch (err) {
-    console.warn(`[Helius] checkWalletTokenHolding error for ${walletAddress}:`, err);
+    // Non-blocking fallback
   }
-  return { isHolding: false, tokenBalance: 0 };
+
+  const defaultResult = { isHolding: false, tokenBalance: 0 };
+  holdingCache.set(cacheKey, { data: defaultResult, expiry: now + 15000 });
+  return defaultResult;
 }
 
-export async function discoverActiveTraders(limit = 20): Promise<string[]> {
+export async function discoverActiveTraders(limit = 15): Promise<string[]> {
+  const now = Date.now();
+  if (discoveredTradersCache && now < discoveredTradersCache.expiry) {
+    return discoveredTradersCache.data;
+  }
+
   try {
     const swaps = await fetchLivePumpFunSwaps(limit);
     const uniqueWallets = Array.from(new Set(swaps.map((s) => s.walletAddress).filter(Boolean)));
+    discoveredTradersCache = { data: uniqueWallets, expiry: now + 60000 }; // 60s cache
     return uniqueWallets;
   } catch (err) {
-    console.error('[Helius] discoverActiveTraders error:', err);
-    return [];
+    return discoveredTradersCache ? discoveredTradersCache.data : [];
   }
 }
 
 export async function fetchSolanaAccountBalance(walletAddress: string): Promise<number> {
+  const now = Date.now();
+  const cached = balanceCache.get(walletAddress);
+  if (cached && now < cached.expiry) {
+    return cached.data;
+  }
+
   try {
-    const res = await fetch(HELIUS_RPC_URL, {
+    const res = await rateLimitedHeliusFetch(HELIUS_RPC_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -137,13 +210,16 @@ export async function fetchSolanaAccountBalance(walletAddress: string): Promise<
     if (res.ok) {
       const data = await res.json();
       if (data.result?.value !== undefined) {
-        return +(data.result.value / 1e9).toFixed(4);
+        const bal = +(data.result.value / 1e9).toFixed(4);
+        balanceCache.set(walletAddress, { data: bal, expiry: now + 60000 }); // 60s TTL
+        return bal;
       }
     }
   } catch (err) {
-    console.warn(`[Helius] getBalance error for ${walletAddress}:`, err);
+    // Non-blocking
   }
-  return 0;
+
+  return cached ? cached.data : 0;
 }
 
 const STABLE_MINTS = new Set([

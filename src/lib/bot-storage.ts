@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 import {
   DEFAULT_DEMO_PORTFOLIO,
   DEFAULT_GEM_RADAR_PORTFOLIO,
@@ -24,8 +25,24 @@ export interface StoredBotState {
   workerStartedAt: number;
 }
 
-const DATA_DIR = path.join(process.cwd(), 'data');
-const STATE_FILE = path.join(DATA_DIR, 'bot-state.json');
+let activeFilePath: string | null = null;
+let memoryState: StoredBotState | null = null;
+
+function resolveStoragePath(): string {
+  if (activeFilePath) return activeFilePath;
+
+  // On Vercel / AWS Lambda, the application directory (/var/task) is strictly read-only.
+  // /tmp is the only writable directory in serverless environments.
+  if (process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME) {
+    activeFilePath = path.join(os.tmpdir(), 'memecoin-radar-bot-state.json');
+    return activeFilePath;
+  }
+
+  // Self-hosted / local Node environment: persist in ./data/bot-state.json
+  const defaultDir = path.join(process.cwd(), 'data');
+  activeFilePath = path.join(defaultDir, 'bot-state.json');
+  return activeFilePath;
+}
 
 function getInitialState(): StoredBotState {
   return {
@@ -45,16 +62,25 @@ function getInitialState(): StoredBotState {
   };
 }
 
-let memoryState: StoredBotState | null = null;
-
 export function loadBotStateFromDisk(): StoredBotState {
+  const filePath = resolveStoragePath();
+
   try {
-    if (!fs.existsSync(DATA_DIR)) {
-      fs.mkdirSync(DATA_DIR, { recursive: true });
+    const dir = path.dirname(filePath);
+    if (!fs.existsSync(dir)) {
+      try {
+        fs.mkdirSync(dir, { recursive: true });
+      } catch (err: any) {
+        // If mkdir fails with EROFS, fallback to tmpdir
+        if (err.code === 'EROFS') {
+          activeFilePath = path.join(os.tmpdir(), 'memecoin-radar-bot-state.json');
+        }
+      }
     }
 
-    if (fs.existsSync(STATE_FILE)) {
-      const raw = fs.readFileSync(STATE_FILE, 'utf-8');
+    const targetFile = activeFilePath || filePath;
+    if (fs.existsSync(targetFile)) {
+      const raw = fs.readFileSync(targetFile, 'utf-8');
       const parsed = JSON.parse(raw);
       if (parsed && parsed.copyBot && parsed.gemRadarBot) {
         memoryState = parsed;
@@ -62,7 +88,7 @@ export function loadBotStateFromDisk(): StoredBotState {
       }
     }
   } catch (err) {
-    console.error('[BotStorage] Failed to read bot-state.json, initializing fresh state:', err);
+    // Non-blocking: continue with fresh state in memory
   }
 
   const fresh = getInitialState();
@@ -72,18 +98,33 @@ export function loadBotStateFromDisk(): StoredBotState {
 }
 
 export function saveBotStateToDisk(state: StoredBotState): void {
-  try {
-    if (!fs.existsSync(DATA_DIR)) {
-      fs.mkdirSync(DATA_DIR, { recursive: true });
-    }
+  memoryState = state;
+  let targetPath = resolveStoragePath();
 
-    const tempFile = `${STATE_FILE}.tmp.${Date.now()}`;
-    fs.writeFileSync(tempFile, JSON.stringify(state, null, 2), 'utf-8');
-    fs.renameSync(tempFile, STATE_FILE);
-    memoryState = state;
-  } catch (err) {
-    console.error('[BotStorage] Error persisting bot-state.json to disk:', err);
-  }
+  const writeToFile = (file: string): boolean => {
+    try {
+      const dir = path.dirname(file);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      fs.writeFileSync(file, JSON.stringify(state, null, 2), 'utf-8');
+      return true;
+    } catch (err: any) {
+      if (err.code === 'EROFS') {
+        // Fallback permanently to /tmp
+        activeFilePath = path.join(os.tmpdir(), 'memecoin-radar-bot-state.json');
+        try {
+          fs.writeFileSync(activeFilePath, JSON.stringify(state, null, 2), 'utf-8');
+          return true;
+        } catch {
+          return false;
+        }
+      }
+      return false;
+    }
+  };
+
+  writeToFile(targetPath);
 }
 
 export function getBotState(): StoredBotState {

@@ -1,5 +1,8 @@
 {
-  "version": 2,
-  "cleanUrls": true,
-  "framework": "nextjs"
+  "crons": [
+    {
+      "path": "/api/demo-bot?cron=true",
+      "schedule": "* * * * *"
+    }
+  ]
 }

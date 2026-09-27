@@ -12,14 +12,25 @@ import { executeBotTick, getServerWorkerStatus, start247BotWorker } from '@/lib/
 
 export const dynamic = 'force-dynamic';
 
-// Fail-safe: ensure 24/7 worker is initiated if runtime allows
-if (typeof process !== 'undefined' && process.env.NEXT_RUNTIME === 'nodejs') {
+// Fail-safe: ensure 24/7 worker is initiated on standalone/long-running Node servers
+if (typeof process !== 'undefined' && process.env.NEXT_RUNTIME === 'nodejs' && !process.env.VERCEL && !process.env.AWS_LAMBDA_FUNCTION_NAME) {
   start247BotWorker();
 }
 
-export async function GET() {
-  // Ensure worker is running
-  start247BotWorker();
+export async function GET(request: NextRequest) {
+  if (!process.env.VERCEL && !process.env.AWS_LAMBDA_FUNCTION_NAME) {
+    start247BotWorker();
+  }
+
+  // Check if triggered by Vercel Cron or if state is stale in serverless
+  const isCron = request.nextUrl.searchParams.get('cron') === 'true';
+  const currentState = getBotState();
+  const timeSinceLastTick = Date.now() - (currentState.lastServerTickTimestamp || 0);
+
+  // If cron invoked or state is older than 45s on Vercel, run an evaluation tick
+  if (isCron || (process.env.VERCEL && timeSinceLastTick > 45000)) {
+    await executeBotTick();
+  }
 
   const state = getBotState();
   const serverWorker = getServerWorkerStatus();
@@ -40,8 +51,9 @@ export async function GET() {
 
 export async function POST(request: NextRequest) {
   try {
-    // Ensure worker is active
-    start247BotWorker();
+    if (!process.env.VERCEL && !process.env.AWS_LAMBDA_FUNCTION_NAME) {
+      start247BotWorker();
+    }
 
     const body = await request.json();
     const { action, botType } = body; // botType can be 'copy' | 'gem_radar'

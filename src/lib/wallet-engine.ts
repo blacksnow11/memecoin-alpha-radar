@@ -858,7 +858,7 @@ export function computeDynamicRankScore(w: WalletProfile): number {
 
 // Filter and rank wallets dynamically across capital efficiency, activity recency, and profit
 let cachedLiveWallets: { wallets: WalletProfile[]; lastUpdated: number } | null = null;
-const LEADERBOARD_CACHE_TTL = 45000; // 45 seconds
+const LEADERBOARD_CACHE_TTL = 60000; // 60 seconds
 
 // Fetch live on-chain profiles for tracked wallets + discover new active traders
 export async function getLiveRankedWallets(
@@ -877,13 +877,17 @@ export async function getLiveRankedWallets(
     // 1. Core tracked wallets
     const liveList: WalletProfile[] = [...SEED_WALLETS];
 
-    // 2. Discover newly active traders on Solana in real-time
-    const discoveredAddresses = await discoverActiveTraders(8).catch(() => []);
+    // 2. Discover newly active traders on Solana in real-time (paced to respect Helius rate limits)
+    const discoveredAddresses = await discoverActiveTraders(6).catch(() => []);
+    let addedCount = 0;
     for (const dAddr of discoveredAddresses) {
+      if (addedCount >= 3) break;
       if (!liveList.some((w) => w.address.toLowerCase() === dAddr.toLowerCase())) {
+        await new Promise((resolve) => setTimeout(resolve, 150));
         const profile = await getWalletByAddress(dAddr);
         if (profile) {
           liveList.push(profile);
+          addedCount++;
         }
       }
     }
