@@ -27,8 +27,8 @@ export async function GET(request: NextRequest) {
   const currentState = getBotState();
   const timeSinceLastTick = Date.now() - (currentState.lastServerTickTimestamp || 0);
 
-  // If cron invoked or state is older than 45s on Vercel, run an evaluation tick
-  if (isCron || (process.env.VERCEL && timeSinceLastTick > 45000)) {
+  // If cron invoked or state is older than 20s on Vercel, run an evaluation tick
+  if (isCron || (process.env.VERCEL && timeSinceLastTick > 20000)) {
     await executeBotTick();
   }
 

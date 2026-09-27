@@ -1,8 +1,0 @@
-{
-  "crons": [
-    {
-      "path": "/api/demo-bot?cron=true",
-      "schedule": "* * * * *"
-    }
-  ]
-}
