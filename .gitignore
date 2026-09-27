@@ -33,3 +33,6 @@ pnpm-debug.log*
 .idea/
 .vscode/
 *.tsbuildinfo
+
+# Runtime bot data
+data/*.json*

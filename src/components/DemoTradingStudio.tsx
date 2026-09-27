@@ -31,8 +31,9 @@ import {
   BarChart3,
   ListFilter,
   Check,
+  Activity,
 } from 'lucide-react';
-import { DemoClosedTrade, DemoPortfolio, DemoPosition, PeriodicPnlSummary } from '@/lib/types';
+import { DemoClosedTrade, DemoPortfolio, DemoPosition, PeriodicPnlSummary, ServerWorkerStatus } from '@/lib/types';
 import { SUPPORTED_CHAINS, formatUsd, getExplorerAddressUrl } from '@/lib/chains';
 import {
   aggregatePnlByDay,
@@ -55,6 +56,7 @@ interface DemoTradingStudioProps {
   onClosePosition: (posId: string) => void;
   onUpdateConfig: (config: Partial<DemoPortfolio>) => void;
   onViewLogs: () => void;
+  serverWorker?: ServerWorkerStatus | null;
 }
 
 function formatDuration(seconds: number): string {
@@ -97,6 +99,7 @@ export function DemoTradingStudio({
   onClosePosition,
   onUpdateConfig,
   onViewLogs,
+  serverWorker,
 }: DemoTradingStudioProps) {
   const [minScore, setMinScore] = useState(portfolio.minConvictionThreshold);
   const [allocation, setAllocation] = useState(portfolio.allocationPerTradeUsd);
@@ -335,6 +338,49 @@ export function DemoTradingStudio({
             </div>
           )}
         </button>
+      </div>
+
+      {/* 24/7 Autonomous Server Daemon Live Status Banner */}
+      <div className="bg-gradient-to-r from-slate-900/95 via-emerald-950/20 to-slate-900/95 border border-emerald-500/30 rounded-2xl p-4 shadow-xl flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
+        <div className="flex items-center space-x-3">
+          <div className="relative flex items-center justify-center w-8 h-8 rounded-xl bg-emerald-500/20 border border-emerald-500/40 shrink-0">
+            <span className="w-2.5 h-2.5 rounded-full bg-emerald-400"></span>
+            <span className="absolute w-4 h-4 rounded-full border border-emerald-400 animate-ping opacity-60"></span>
+          </div>
+          <div>
+            <div className="flex items-center space-x-2">
+              <span className="text-xs font-bold text-white tracking-wide uppercase flex items-center space-x-1.5">
+                <span>24/7 Autonomous Server Engine: ACTIVE</span>
+              </span>
+              <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-300">
+                Solana Mainnet
+              </span>
+            </div>
+            <p className="text-[11px] text-slate-400 mt-0.5">
+              Runs continuously in the background on the server every 20s. Scans live swaps &amp; breakout setups even when your browser is closed.
+            </p>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2 text-[11px] font-mono">
+          <div className="px-2.5 py-1 rounded-lg bg-slate-800/80 border border-slate-700/60 text-slate-300 flex items-center space-x-1.5">
+            <Clock className="w-3.5 h-3.5 text-cyan-400" />
+            <span>
+              Last Server Tick:{' '}
+              {serverWorker?.lastTickTimestamp
+                ? `${Math.max(1, Math.round((Date.now() - serverWorker.lastTickTimestamp) / 1000))}s ago`
+                : 'Active (20s cycle)'}
+            </span>
+          </div>
+          <div className="px-2.5 py-1 rounded-lg bg-slate-800/80 border border-slate-700/60 text-slate-300 flex items-center space-x-1.5">
+            <Activity className="w-3.5 h-3.5 text-emerald-400" />
+            <span>Ticks: {serverWorker?.totalTicksExecuted || 0}</span>
+          </div>
+          <div className="px-2.5 py-1 rounded-lg bg-slate-800/80 border border-slate-700/60 text-slate-300 flex items-center space-x-1.5">
+            <Shield className="w-3.5 h-3.5 text-purple-400" />
+            <span>Disk Synced</span>
+          </div>
+        </div>
       </div>
 
       {/* Top Banner: Status & Controls */}

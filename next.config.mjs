@@ -3,6 +3,7 @@ const nextConfig = {
   reactStrictMode: true,
   experimental: {
     webpackBuildWorker: false,
+    instrumentationHook: true,
   },
   images: {
     remotePatterns: [

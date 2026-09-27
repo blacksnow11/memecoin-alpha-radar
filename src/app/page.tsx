@@ -8,7 +8,7 @@ import { WalletInspectorModal } from '@/components/WalletInspectorModal';
 import { BotExporterModal } from '@/components/BotExporterModal';
 import { DemoTradingStudio } from '@/components/DemoTradingStudio';
 import { RecordedLogsViewer } from '@/components/RecordedLogsViewer';
-import { ChainId, DecisionLog, DemoPortfolio, DemoPosition, WalletProfile } from '@/lib/types';
+import { ChainId, DecisionLog, DemoPortfolio, DemoPosition, WalletProfile, ServerWorkerStatus } from '@/lib/types';
 import {
   DEFAULT_DEMO_PORTFOLIO,
   DEFAULT_GEM_RADAR_PORTFOLIO,
@@ -52,6 +52,9 @@ export default function Home() {
   const [gemPositions, setGemPositions] = useState<DemoPosition[]>([]);
   const [gemLogs, setGemLogs] = useState<DecisionLog[]>(INITIAL_GEM_RADAR_LOGS);
 
+  // 24/7 Autonomous Server Worker Telemetry
+  const [serverWorker, setServerWorker] = useState<ServerWorkerStatus | null>(null);
+
   const activePortfolio = botMode === 'gem_radar' ? gemPortfolio : copyPortfolio;
   const activePositions = botMode === 'gem_radar' ? gemPositions : copyPositions;
   const activeLogs = botMode === 'gem_radar' ? gemLogs : copyLogs;
@@ -81,7 +84,7 @@ export default function Home() {
     };
   }, [selectedChain, timeframe, sortBy]);
 
-  // Fetch demo state for both engines
+  // Fetch demo state for both engines and 24/7 server worker telemetry
   const loadDemoState = useCallback(async () => {
     try {
       const res = await fetch('/api/demo-bot');
@@ -102,17 +105,27 @@ export default function Home() {
           setGemPositions(data.gemRadarBot.positions || []);
           setGemLogs(data.gemRadarBot.logs || []);
         }
+
+        if (data.serverWorker) {
+          setServerWorker(data.serverWorker);
+        }
       }
     } catch (err) {
       console.error('Failed to load demo bot state:', err);
     }
   }, []);
 
+  // Continuous passive telemetry polling every 4 seconds
+  // Reflects the 24/7 autonomous background worker without requiring the browser to drive execution
   useEffect(() => {
     loadDemoState();
+    const interval = setInterval(() => {
+      loadDemoState();
+    }, 4000);
+    return () => clearInterval(interval);
   }, [loadDemoState]);
 
-  // Autonomous bot tick dispatcher
+  // On-demand manual bot tick dispatcher
   const handleTick = useCallback(async () => {
     try {
       const res = await fetch('/api/demo-bot', {
@@ -132,23 +145,14 @@ export default function Home() {
           setGemPositions(data.gemRadarBot.positions || []);
           setGemLogs(data.gemRadarBot.logs || []);
         }
+        if (data.serverWorker) {
+          setServerWorker(data.serverWorker);
+        }
       }
     } catch (err) {
       console.error('Tick error:', err);
     }
   }, []);
-
-  // Periodic autonomous runner: runs while either bot is active
-  useEffect(() => {
-    if (!copyPortfolio.isBotRunning && !gemPortfolio.isBotRunning) return;
-
-    // Run tick every 8 seconds
-    const interval = setInterval(() => {
-      handleTick();
-    }, 8000);
-
-    return () => clearInterval(interval);
-  }, [copyPortfolio.isBotRunning, gemPortfolio.isBotRunning, handleTick]);
 
   // Handle reload $100
   const handleReload = async () => {
@@ -365,6 +369,7 @@ export default function Home() {
             onClosePosition={handleClosePosition}
             onUpdateConfig={handleUpdateConfig}
             onViewLogs={() => setActiveTab('logs')}
+            serverWorker={serverWorker}
           />
         )}
 

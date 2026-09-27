@@ -4,304 +4,307 @@ import {
   DEFAULT_GEM_RADAR_PORTFOLIO,
   INITIAL_DECISION_LOGS,
   INITIAL_GEM_RADAR_LOGS,
-  runCopyBotTick,
-  runGemRadarBotTick,
 } from '@/lib/demo-trading-engine';
-import { DecisionLog, DemoClosedTrade, DemoPortfolio, DemoPosition } from '@/lib/types';
+import { DecisionLog, DemoClosedTrade, DemoPosition } from '@/lib/types';
 import { fetchSolanaTokenPrice } from '@/lib/solana/birdeye';
+import { getBotState, updateBotState, StoredBotState } from '@/lib/bot-storage';
+import { executeBotTick, getServerWorkerStatus, start247BotWorker } from '@/lib/bot-worker';
 
 export const dynamic = 'force-dynamic';
 
-// Dual-Engine in-memory runtime states:
-// 1. Smart Money Copy Bot ($100 Bankroll)
-let copyPortfolio: DemoPortfolio = { ...DEFAULT_DEMO_PORTFOLIO };
-let copyPositions: DemoPosition[] = [];
-let copyLogs: DecisionLog[] = [...INITIAL_DECISION_LOGS];
-
-// 2. Gem Radar Breakout Bot ($100 Bankroll)
-let gemPortfolio: DemoPortfolio = { ...DEFAULT_GEM_RADAR_PORTFOLIO };
-let gemPositions: DemoPosition[] = [];
-let gemLogs: DecisionLog[] = [...INITIAL_GEM_RADAR_LOGS];
+// Fail-safe: ensure 24/7 worker is initiated if runtime allows
+if (typeof process !== 'undefined' && process.env.NEXT_RUNTIME === 'nodejs') {
+  start247BotWorker();
+}
 
 export async function GET() {
+  // Ensure worker is running
+  start247BotWorker();
+
+  const state = getBotState();
+  const serverWorker = getServerWorkerStatus();
+
   return NextResponse.json({
     success: true,
     // Default / Copy Bot payload (maintains backward compatibility)
-    portfolio: copyPortfolio,
-    positions: copyPositions,
-    logs: copyLogs,
+    portfolio: state.copyBot.portfolio,
+    positions: state.copyBot.positions,
+    logs: state.copyBot.logs,
     // Full Dual-Bot Engine payload
-    copyBot: {
-      portfolio: copyPortfolio,
-      positions: copyPositions,
-      logs: copyLogs,
-    },
-    gemRadarBot: {
-      portfolio: gemPortfolio,
-      positions: gemPositions,
-      logs: gemLogs,
-    },
+    copyBot: state.copyBot,
+    gemRadarBot: state.gemRadarBot,
+    serverWorker,
     timestamp: Date.now(),
   });
 }
 
 export async function POST(request: NextRequest) {
   try {
+    // Ensure worker is active
+    start247BotWorker();
+
     const body = await request.json();
     const { action, botType } = body; // botType can be 'copy' | 'gem_radar'
 
     // 1. Autonomous Tick on both engines
     if (action === 'tick') {
-      const [copyRes, gemRes] = await Promise.all([
-        runCopyBotTick(copyPortfolio, copyPositions, copyLogs),
-        runGemRadarBotTick(gemPortfolio, gemPositions, gemLogs),
-      ]);
-
-      copyPortfolio = copyRes.updatedPortfolio;
-      copyPositions = copyRes.updatedPositions;
-      if (copyRes.newLogs.length > 0) {
-        copyLogs = [...copyRes.newLogs, ...copyLogs].slice(0, 50);
-      }
-
-      gemPortfolio = gemRes.updatedPortfolio;
-      gemPositions = gemRes.updatedPositions;
-      if (gemRes.newLogs.length > 0) {
-        gemLogs = [...gemRes.newLogs, ...gemLogs].slice(0, 50);
-      }
+      const updatedState = await executeBotTick();
+      const serverWorker = getServerWorkerStatus();
 
       return NextResponse.json({
         success: true,
-        portfolio: botType === 'gem_radar' ? gemPortfolio : copyPortfolio,
-        positions: botType === 'gem_radar' ? gemPositions : copyPositions,
-        logs: botType === 'gem_radar' ? gemLogs : copyLogs,
-        copyBot: {
-          portfolio: copyPortfolio,
-          positions: copyPositions,
-          logs: copyLogs,
-        },
-        gemRadarBot: {
-          portfolio: gemPortfolio,
-          positions: gemPositions,
-          logs: gemLogs,
-        },
+        portfolio: botType === 'gem_radar' ? updatedState.gemRadarBot.portfolio : updatedState.copyBot.portfolio,
+        positions: botType === 'gem_radar' ? updatedState.gemRadarBot.positions : updatedState.copyBot.positions,
+        logs: botType === 'gem_radar' ? updatedState.gemRadarBot.logs : updatedState.copyBot.logs,
+        copyBot: updatedState.copyBot,
+        gemRadarBot: updatedState.gemRadarBot,
+        serverWorker,
       });
     }
 
     // 2. Manual reload $100 cash
     if (action === 'reload') {
-      const targetPortfolio = botType === 'gem_radar' ? gemPortfolio : copyPortfolio;
-      const targetPositions = botType === 'gem_radar' ? gemPositions : copyPositions;
-      const targetLogs = botType === 'gem_radar' ? gemLogs : copyLogs;
+      const nextState = updateBotState((prevState) => {
+        const isGem = botType === 'gem_radar';
+        const targetBot = isGem ? prevState.gemRadarBot : prevState.copyBot;
 
-      targetPortfolio.currentCash = +(targetPortfolio.currentCash + 100).toFixed(2);
-      targetPortfolio.reloadCount += 1;
-      targetPortfolio.totalDemoCapitalLoaded += 100;
+        targetBot.portfolio.currentCash = +(targetBot.portfolio.currentCash + 100).toFixed(2);
+        targetBot.portfolio.reloadCount += 1;
+        targetBot.portfolio.totalDemoCapitalLoaded += 100;
 
-      const openMarketValue = targetPositions
-        .filter((p) => p.status === 'OPEN')
-        .reduce((acc, p) => acc + (p.investedUsd + p.pnlUsd), 0);
-      targetPortfolio.totalEquityUsd = +(targetPortfolio.currentCash + openMarketValue).toFixed(2);
+        const openMarketValue = targetBot.positions
+          .filter((p) => p.status === 'OPEN')
+          .reduce((acc, p) => acc + (p.investedUsd + p.pnlUsd), 0);
+        targetBot.portfolio.totalEquityUsd = +(targetBot.portfolio.currentCash + openMarketValue).toFixed(2);
 
-      const reloadLog: DecisionLog = {
-        id: `log-reload-${Date.now()}`,
-        timestamp: Date.now(),
-        type: 'AUTO_RELOAD',
-        tokenSymbol: 'USD_DEMO',
-        tokenAddress: '0x0',
-        chain: 'solana',
-        convictionScore: 100,
-        action: `MANUAL RELOAD: Added $100.00 to ${botType === 'gem_radar' ? 'Gem Radar' : 'Copy'} Bot`,
-        rationale: `Manual bankroll replenishment triggered. Current cash: $${targetPortfolio.currentCash}.`,
-        improvementLessonTag: '[MANUAL_RELOAD]',
-        improvementNote: `Total capital loaded for this engine: $${targetPortfolio.totalDemoCapitalLoaded}.`,
-      };
+        const reloadLog: DecisionLog = {
+          id: `log-reload-${Date.now()}`,
+          timestamp: Date.now(),
+          type: 'AUTO_RELOAD',
+          tokenSymbol: 'USD_DEMO',
+          tokenAddress: '0x0',
+          chain: 'solana',
+          convictionScore: 100,
+          action: `MANUAL RELOAD: Added $100.00 to ${isGem ? 'Gem Radar' : 'Copy'} Bot`,
+          rationale: `Manual bankroll replenishment triggered. Current cash: $${targetBot.portfolio.currentCash}.`,
+          improvementLessonTag: '[MANUAL_RELOAD]',
+          improvementNote: `Total capital loaded for this engine: $${targetBot.portfolio.totalDemoCapitalLoaded}.`,
+        };
 
-      targetLogs.unshift(reloadLog);
+        targetBot.logs.unshift(reloadLog);
+        return { ...prevState };
+      });
 
+      const serverWorker = getServerWorkerStatus();
       return NextResponse.json({
         success: true,
-        portfolio: targetPortfolio,
-        positions: targetPositions,
-        logs: targetLogs,
-        copyBot: { portfolio: copyPortfolio, positions: copyPositions, logs: copyLogs },
-        gemRadarBot: { portfolio: gemPortfolio, positions: gemPositions, logs: gemLogs },
+        copyBot: nextState.copyBot,
+        gemRadarBot: nextState.gemRadarBot,
+        serverWorker,
       });
     }
 
     // 3. Toggle bot running state
     if (action === 'toggle_bot') {
-      if (botType === 'gem_radar') {
-        gemPortfolio.isBotRunning = !gemPortfolio.isBotRunning;
-        return NextResponse.json({ success: true, isBotRunning: gemPortfolio.isBotRunning });
-      } else {
-        copyPortfolio.isBotRunning = !copyPortfolio.isBotRunning;
-        return NextResponse.json({ success: true, isBotRunning: copyPortfolio.isBotRunning });
-      }
+      const nextState = updateBotState((prevState) => {
+        if (botType === 'gem_radar') {
+          prevState.gemRadarBot.portfolio.isBotRunning = !prevState.gemRadarBot.portfolio.isBotRunning;
+        } else {
+          prevState.copyBot.portfolio.isBotRunning = !prevState.copyBot.portfolio.isBotRunning;
+        }
+        return { ...prevState };
+      });
+
+      return NextResponse.json({
+        success: true,
+        isBotRunning: botType === 'gem_radar' ? nextState.gemRadarBot.portfolio.isBotRunning : nextState.copyBot.portfolio.isBotRunning,
+        copyBot: nextState.copyBot,
+        gemRadarBot: nextState.gemRadarBot,
+      });
     }
 
     // 4. Close an open position
     if (action === 'close_position') {
       const { positionId } = body;
-      // Search in copy positions first, then gem positions
-      let isGem = false;
-      let posIndex = copyPositions.findIndex((p) => p.id === positionId && p.status === 'OPEN');
-      if (posIndex < 0) {
-        posIndex = gemPositions.findIndex((p) => p.id === positionId && p.status === 'OPEN');
-        isGem = true;
-      }
+      let closedSuccessfully = false;
 
-      if (posIndex >= 0) {
-        const targetPortfolio = isGem ? gemPortfolio : copyPortfolio;
-        const targetPositions = isGem ? gemPositions : copyPositions;
-        const targetLogs = isGem ? gemLogs : copyLogs;
-
-        const pos = targetPositions[posIndex];
-        const returnAmount = +(pos.investedUsd + pos.pnlUsd).toFixed(2);
-        targetPortfolio.currentCash = +(targetPortfolio.currentCash + Math.max(0, returnAmount)).toFixed(2);
-        targetPortfolio.totalRealizedPnlUsd = +(targetPortfolio.totalRealizedPnlUsd + pos.pnlUsd).toFixed(2);
-
-        if (pos.pnlUsd >= 0) {
-          targetPortfolio.totalWins += 1;
-        } else {
-          targetPortfolio.totalLosses += 1;
+      const nextState = updateBotState((prevState) => {
+        let isGem = false;
+        let posIndex = prevState.copyBot.positions.findIndex((p) => p.id === positionId && p.status === 'OPEN');
+        if (posIndex < 0) {
+          posIndex = prevState.gemRadarBot.positions.findIndex((p) => p.id === positionId && p.status === 'OPEN');
+          isGem = true;
         }
 
-        const totalTrades = targetPortfolio.totalWins + targetPortfolio.totalLosses;
-        targetPortfolio.winRate = totalTrades > 0 ? +((targetPortfolio.totalWins / totalTrades) * 100).toFixed(1) : 0;
+        if (posIndex >= 0) {
+          const targetBot = isGem ? prevState.gemRadarBot : prevState.copyBot;
+          const pos = targetBot.positions[posIndex];
+          const returnAmount = +(pos.investedUsd + pos.pnlUsd).toFixed(2);
+          targetBot.portfolio.currentCash = +(targetBot.portfolio.currentCash + Math.max(0, returnAmount)).toFixed(2);
+          targetBot.portfolio.totalRealizedPnlUsd = +(targetBot.portfolio.totalRealizedPnlUsd + pos.pnlUsd).toFixed(2);
 
-        const closedTrade: DemoClosedTrade = {
-          id: `closed-${Date.now()}-${Math.random().toString(36).substring(7)}`,
-          tokenAddress: pos.tokenAddress,
-          tokenSymbol: pos.tokenSymbol,
-          tokenName: pos.tokenName,
-          chain: pos.chain,
-          copiedFromWallet: pos.copiedFromWallet,
-          copiedFromWalletLabel: pos.copiedFromWalletLabel,
-          entryTimestamp: pos.entryTimestamp,
-          exitTimestamp: Date.now(),
-          holdDurationSeconds: Math.max(1, Math.round((Date.now() - pos.entryTimestamp) / 1000)),
-          entryPriceUsd: pos.entryPriceUsd,
-          exitPriceUsd: pos.currentPriceUsd,
-          investedUsd: pos.investedUsd,
-          returnedUsd: Math.max(0, returnAmount),
-          netPnlUsd: pos.pnlUsd,
-          netPnlPercent: pos.pnlPercent,
-          multiplier: +(pos.currentPriceUsd / pos.entryPriceUsd).toFixed(2),
-          exitReason: 'MANUAL_CLOSE',
-          exitReasonDetail: `Manual Discretionary Exit at $${pos.currentPriceUsd} (${pos.pnlPercent >= 0 ? '+' : ''}${pos.pnlPercent}%)`,
-          alphaScoreAtEntry: pos.alphaScoreAtEntry,
-          entryRationale: pos.entryRationale,
-          simulatedGasFeeUsd: 0.005,
-        };
+          if (pos.pnlUsd >= 0) {
+            targetBot.portfolio.totalWins += 1;
+          } else {
+            targetBot.portfolio.totalLosses += 1;
+          }
 
-        targetPortfolio.closedTrades = [closedTrade, ...(targetPortfolio.closedTrades || [])];
-        targetPositions.splice(posIndex, 1);
+          const totalTrades = targetBot.portfolio.totalWins + targetBot.portfolio.totalLosses;
+          targetBot.portfolio.winRate = totalTrades > 0 ? +((targetBot.portfolio.totalWins / totalTrades) * 100).toFixed(1) : 0;
 
-        const openPositions = targetPositions.filter((p) => p.status === 'OPEN');
-        const finalInvested = openPositions.reduce((acc, p) => acc + p.investedUsd, 0);
-        const finalMarketVal = openPositions.reduce((acc, p) => acc + (p.investedUsd + p.pnlUsd), 0);
-        targetPortfolio.investedInPositionsUsd = +finalInvested.toFixed(2);
-        targetPortfolio.totalUnrealizedPnlUsd = +(finalMarketVal - finalInvested).toFixed(2);
-        targetPortfolio.totalEquityUsd = +(targetPortfolio.currentCash + finalMarketVal).toFixed(2);
+          const closedTrade: DemoClosedTrade = {
+            id: `closed-${Date.now()}-${Math.random().toString(36).substring(7)}`,
+            tokenAddress: pos.tokenAddress,
+            tokenSymbol: pos.tokenSymbol,
+            tokenName: pos.tokenName,
+            chain: pos.chain,
+            copiedFromWallet: pos.copiedFromWallet,
+            copiedFromWalletLabel: pos.copiedFromWalletLabel,
+            entryTimestamp: pos.entryTimestamp,
+            exitTimestamp: Date.now(),
+            holdDurationSeconds: Math.max(1, Math.round((Date.now() - pos.entryTimestamp) / 1000)),
+            entryPriceUsd: pos.entryPriceUsd,
+            exitPriceUsd: pos.currentPriceUsd,
+            investedUsd: pos.investedUsd,
+            returnedUsd: Math.max(0, returnAmount),
+            netPnlUsd: pos.pnlUsd,
+            netPnlPercent: pos.pnlPercent,
+            multiplier: +(pos.currentPriceUsd / pos.entryPriceUsd).toFixed(2),
+            exitReason: 'MANUAL_CLOSE',
+            exitReasonDetail: `Manual Discretionary Exit at $${pos.currentPriceUsd} (${pos.pnlPercent >= 0 ? '+' : ''}${pos.pnlPercent}%)`,
+            alphaScoreAtEntry: pos.alphaScoreAtEntry,
+            entryRationale: pos.entryRationale,
+            simulatedGasFeeUsd: 0.005,
+          };
 
-        targetLogs.unshift({
-          id: `log-close-${Date.now()}`,
-          timestamp: Date.now(),
-          type: 'EXIT_MANUAL',
-          tokenSymbol: pos.tokenSymbol,
-          tokenAddress: pos.tokenAddress,
-          chain: pos.chain,
-          convictionScore: pos.alphaScoreAtEntry,
-          action: `MANUAL CLOSE: Sold ${pos.tokenSymbol} at $${pos.currentPriceUsd} (${pos.pnlPercent >= 0 ? '+' : ''}${pos.pnlPercent}%)`,
-          rationale: `Manual exit executed on ${isGem ? 'Gem Radar' : 'Copy'} bot. Capital returned: $${returnAmount}.`,
-          outcomePnlUsd: pos.pnlUsd,
-          outcomePnlPercent: pos.pnlPercent,
-          improvementLessonTag: '[MANUAL_EXIT]',
-          improvementNote: 'Manual intervention recorded.',
-        });
+          targetBot.portfolio.closedTrades = [closedTrade, ...(targetBot.portfolio.closedTrades || [])];
+          targetBot.positions.splice(posIndex, 1);
 
-        return NextResponse.json({
-          success: true,
-          copyBot: { portfolio: copyPortfolio, positions: copyPositions, logs: copyLogs },
-          gemRadarBot: { portfolio: gemPortfolio, positions: gemPositions, logs: gemLogs },
-        });
-      }
+          const openPositions = targetBot.positions.filter((p) => p.status === 'OPEN');
+          const finalInvested = openPositions.reduce((acc, p) => acc + p.investedUsd, 0);
+          const finalMarketVal = openPositions.reduce((acc, p) => acc + (p.investedUsd + p.pnlUsd), 0);
+          targetBot.portfolio.investedInPositionsUsd = +finalInvested.toFixed(2);
+          targetBot.portfolio.totalUnrealizedPnlUsd = +(finalMarketVal - finalInvested).toFixed(2);
+          targetBot.portfolio.totalEquityUsd = +(targetBot.portfolio.currentCash + finalMarketVal).toFixed(2);
+
+          targetBot.logs.unshift({
+            id: `log-close-${Date.now()}`,
+            timestamp: Date.now(),
+            type: 'EXIT_MANUAL',
+            tokenSymbol: pos.tokenSymbol,
+            tokenAddress: pos.tokenAddress,
+            chain: pos.chain,
+            convictionScore: pos.alphaScoreAtEntry,
+            action: `MANUAL CLOSE: Sold ${pos.tokenSymbol} at $${pos.currentPriceUsd} (${pos.pnlPercent >= 0 ? '+' : ''}${pos.pnlPercent}%)`,
+            rationale: `Manual exit executed on ${isGem ? 'Gem Radar' : 'Copy'} bot. Capital returned: $${returnAmount}.`,
+            outcomePnlUsd: pos.pnlUsd,
+            outcomePnlPercent: pos.pnlPercent,
+            improvementLessonTag: '[MANUAL_EXIT]',
+            improvementNote: 'Manual intervention recorded.',
+          });
+
+          closedSuccessfully = true;
+        }
+
+        return { ...prevState };
+      });
+
+      return NextResponse.json({
+        success: closedSuccessfully,
+        copyBot: nextState.copyBot,
+        gemRadarBot: nextState.gemRadarBot,
+      });
     }
 
     // 5. Open Gem Trade explicitly from Radar button
     if (action === 'open_gem_trade') {
       const { signal } = body;
-      if (signal && gemPortfolio.currentCash >= gemPortfolio.allocationPerTradeUsd) {
+      if (signal) {
         const livePriceData = await fetchSolanaTokenPrice(signal.tokenAddress);
         const spotPrice = livePriceData.priceUsd > 0 ? livePriceData.priceUsd : signal.priceUsd;
 
-        const allocation = gemPortfolio.allocationPerTradeUsd;
-        gemPortfolio.currentCash = +(gemPortfolio.currentCash - allocation).toFixed(2);
-        const tokenAmount = +(allocation / spotPrice).toFixed(4);
+        const nextState = updateBotState((prevState) => {
+          if (prevState.gemRadarBot.portfolio.currentCash >= prevState.gemRadarBot.portfolio.allocationPerTradeUsd) {
+            const allocation = prevState.gemRadarBot.portfolio.allocationPerTradeUsd;
+            prevState.gemRadarBot.portfolio.currentCash = +(prevState.gemRadarBot.portfolio.currentCash - allocation).toFixed(2);
+            const tokenAmount = +(allocation / spotPrice).toFixed(4);
 
-        const newPos: DemoPosition = {
-          id: `pos-gem-${Date.now()}-${signal.tokenSymbol}`,
-          tokenAddress: signal.tokenAddress,
-          tokenSymbol: signal.tokenSymbol,
-          tokenName: signal.tokenName,
-          chain: 'solana',
-          copiedFromWallet: signal.tokenAddress,
-          copiedFromWalletLabel: `Gem Radar: ${signal.patternTitle}`,
-          entryTimestamp: Date.now(),
-          entryPriceUsd: spotPrice,
-          currentPriceUsd: spotPrice,
-          investedUsd: allocation,
-          tokenAmount,
-          pnlUsd: 0,
-          pnlPercent: 0,
-          takeProfitPrice1: +(spotPrice * 2.0).toFixed(6),
-          takeProfitPrice2: +(spotPrice * 5.0).toFixed(6),
-          stopLossPrice: +(spotPrice * (1 + gemPortfolio.stopLossPercent / 100)).toFixed(6),
-          status: 'OPEN',
-          alphaScoreAtEntry: signal.confidenceScore,
-          entryRationale: `User triggered breakout snipe on ${signal.tokenSymbol}. Pattern: ${signal.patternTitle}.`,
-          strategy: 'GEM_RADAR_BREAKOUT',
-          gemPattern: signal.patternType,
-        };
+            const newPos: DemoPosition = {
+              id: `pos-gem-${Date.now()}-${signal.tokenSymbol}`,
+              tokenAddress: signal.tokenAddress,
+              tokenSymbol: signal.tokenSymbol,
+              tokenName: signal.tokenName,
+              chain: 'solana',
+              copiedFromWallet: signal.tokenAddress,
+              copiedFromWalletLabel: `Gem Radar: ${signal.patternTitle}`,
+              entryTimestamp: Date.now(),
+              entryPriceUsd: spotPrice,
+              currentPriceUsd: spotPrice,
+              investedUsd: allocation,
+              tokenAmount,
+              pnlUsd: 0,
+              pnlPercent: 0,
+              takeProfitPrice1: +(spotPrice * 2.0).toFixed(6),
+              takeProfitPrice2: +(spotPrice * 5.0).toFixed(6),
+              stopLossPrice: +(spotPrice * (1 + prevState.gemRadarBot.portfolio.stopLossPercent / 100)).toFixed(6),
+              status: 'OPEN',
+              alphaScoreAtEntry: signal.confidenceScore,
+              entryRationale: `User triggered breakout snipe on ${signal.tokenSymbol}. Pattern: ${signal.patternTitle}.`,
+              strategy: 'GEM_RADAR_BREAKOUT',
+              gemPattern: signal.patternType,
+            };
 
-        gemPositions.push(newPos);
+            prevState.gemRadarBot.positions.push(newPos);
 
-        gemLogs.unshift({
-          id: `log-user-gem-${Date.now()}`,
-          timestamp: Date.now(),
-          type: 'ENTRY_EXECUTED',
-          tokenSymbol: signal.tokenSymbol,
-          tokenAddress: signal.tokenAddress,
-          chain: 'solana',
-          convictionScore: signal.confidenceScore,
-          action: `USER TRIGGERED GEM SNIPE: Invested $${allocation} into ${signal.tokenSymbol}`,
-          rationale: `Manual trigger on Gem Radar signal: ${signal.patternTitle}. Live spot price: $${spotPrice}.`,
-          improvementLessonTag: '[USER_GEM_SNIPE]',
-          improvementNote: 'Position added to Gem Radar Hunter portfolio with 2x TP / -20% SL triggers.',
+            prevState.gemRadarBot.logs.unshift({
+              id: `log-user-gem-${Date.now()}`,
+              timestamp: Date.now(),
+              type: 'ENTRY_EXECUTED',
+              tokenSymbol: signal.tokenSymbol,
+              tokenAddress: signal.tokenAddress,
+              chain: 'solana',
+              convictionScore: signal.confidenceScore,
+              action: `USER TRIGGERED GEM SNIPE: Invested $${allocation} into ${signal.tokenSymbol}`,
+              rationale: `Manual trigger on Gem Radar signal: ${signal.patternTitle}. Live spot price: $${spotPrice}.`,
+              improvementLessonTag: '[USER_GEM_SNIPE]',
+              improvementNote: 'Position added to Gem Radar Hunter portfolio with 2x TP / -20% SL triggers.',
+            });
+          }
+          return { ...prevState };
         });
 
         return NextResponse.json({
           success: true,
-          copyBot: { portfolio: copyPortfolio, positions: copyPositions, logs: copyLogs },
-          gemRadarBot: { portfolio: gemPortfolio, positions: gemPositions, logs: gemLogs },
+          copyBot: nextState.copyBot,
+          gemRadarBot: nextState.gemRadarBot,
         });
       }
     }
 
     // 6. Reset both to pristine clean slates
     if (action === 'reset') {
-      copyPortfolio = { ...DEFAULT_DEMO_PORTFOLIO, equityHistory: [{ timestamp: Date.now(), equityUsd: 100 }] };
-      copyPositions = [];
-      copyLogs = [...INITIAL_DECISION_LOGS];
+      const resetState: StoredBotState = {
+        copyBot: {
+          portfolio: { ...DEFAULT_DEMO_PORTFOLIO, equityHistory: [{ timestamp: Date.now(), equityUsd: 100 }] },
+          positions: [],
+          logs: [...INITIAL_DECISION_LOGS],
+        },
+        gemRadarBot: {
+          portfolio: { ...DEFAULT_GEM_RADAR_PORTFOLIO, equityHistory: [{ timestamp: Date.now(), equityUsd: 100 }] },
+          positions: [],
+          logs: [...INITIAL_GEM_RADAR_LOGS],
+        },
+        lastServerTickTimestamp: Date.now(),
+        totalTicksExecuted: 0,
+        workerStartedAt: Date.now(),
+      };
 
-      gemPortfolio = { ...DEFAULT_GEM_RADAR_PORTFOLIO, equityHistory: [{ timestamp: Date.now(), equityUsd: 100 }] };
-      gemPositions = [];
-      gemLogs = [...INITIAL_GEM_RADAR_LOGS];
+      const nextState = updateBotState(() => resetState);
 
       return NextResponse.json({
         success: true,
-        copyBot: { portfolio: copyPortfolio, positions: copyPositions, logs: copyLogs },
-        gemRadarBot: { portfolio: gemPortfolio, positions: gemPositions, logs: gemLogs },
+        copyBot: nextState.copyBot,
+        gemRadarBot: nextState.gemRadarBot,
       });
     }
 

@@ -291,3 +291,11 @@ export interface PreBreakoutGemSignal {
   bondingCurvePercent?: number;
 }
 
+export interface ServerWorkerStatus {
+  isWorkerRunning: boolean;
+  workerStartedAt: number;
+  lastTickTimestamp: number;
+  totalTicksExecuted: number;
+  intervalSeconds: number;
+}
+
