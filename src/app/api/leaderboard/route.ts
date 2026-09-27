@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getRankedWallets } from '@/lib/wallet-engine';
+import { getLiveRankedWallets } from '@/lib/wallet-engine';
 import { ChainId } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
@@ -13,7 +13,7 @@ export async function GET(request: NextRequest) {
     const excludeBots = searchParams.get('excludeBots') !== 'false';
     const activityParam = (searchParams.get('activity') || 'all') as 'all' | 'hot' | 'active';
 
-    const wallets = getRankedWallets(chainParam, timeframeParam, sortByParam, excludeBots, activityParam);
+    const wallets = await getLiveRankedWallets(chainParam, timeframeParam, sortByParam, excludeBots, activityParam);
 
     return NextResponse.json({
       success: true,

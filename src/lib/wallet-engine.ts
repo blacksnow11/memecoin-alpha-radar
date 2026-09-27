@@ -1,5 +1,5 @@
 import { ChainId, MultiplierDistribution, Trade, WalletProfile } from './types';
-import { fetchSolanaAccountBalance, fetchWalletOnChainSwaps, OnChainSwap } from './solana/helius';
+import { discoverActiveTraders, fetchSolanaAccountBalance, fetchWalletOnChainSwaps, OnChainSwap } from './solana/helius';
 
 // 100% Real Verified Directional Smart-Money Solana Wallets
 // Filtered to exclude institutional market-making routers, AMM arbs, and exchange sweepers
@@ -857,21 +857,62 @@ export function computeDynamicRankScore(w: WalletProfile): number {
 }
 
 // Filter and rank wallets dynamically across capital efficiency, activity recency, and profit
-export function getRankedWallets(
+let cachedLiveWallets: { wallets: WalletProfile[]; lastUpdated: number } | null = null;
+const LEADERBOARD_CACHE_TTL = 45000; // 45 seconds
+
+// Fetch live on-chain profiles for tracked wallets + discover new active traders
+export async function getLiveRankedWallets(
   chain?: ChainId | 'all',
   timeframe: '24h' | '7d' | '30d' | 'all' = 'all',
   sortBy: 'dynamic' | 'capitalEfficiency' | 'profit' | 'winrate' | 'activity' = 'dynamic',
   excludeMarketMakers: boolean = true,
   activityFilter: 'all' | 'hot' | 'active' = 'all'
-): WalletProfile[] {
-  let list = [...SEED_WALLETS].filter((w) => w.chain === 'solana');
+): Promise<WalletProfile[]> {
+  const now = Date.now();
+  if (cachedLiveWallets && now - cachedLiveWallets.lastUpdated < LEADERBOARD_CACHE_TTL) {
+    return rankWalletList(cachedLiveWallets.wallets, timeframe, sortBy, excludeMarketMakers, activityFilter);
+  }
 
-  // Anti-MM & Anti-Exchange Bot Filter
+  try {
+    // 1. Core tracked wallets
+    const liveList: WalletProfile[] = [...SEED_WALLETS];
+
+    // 2. Discover newly active traders on Solana in real-time
+    const discoveredAddresses = await discoverActiveTraders(8).catch(() => []);
+    for (const dAddr of discoveredAddresses) {
+      if (!liveList.some((w) => w.address.toLowerCase() === dAddr.toLowerCase())) {
+        const profile = await getWalletByAddress(dAddr);
+        if (profile) {
+          liveList.push(profile);
+        }
+      }
+    }
+
+    cachedLiveWallets = {
+      wallets: liveList,
+      lastUpdated: now,
+    };
+
+    return rankWalletList(liveList, timeframe, sortBy, excludeMarketMakers, activityFilter);
+  } catch (err) {
+    console.warn('[Leaderboard] Error refreshing live profiles:', err);
+    return getRankedWallets(chain, timeframe, sortBy, excludeMarketMakers, activityFilter);
+  }
+}
+
+function rankWalletList(
+  listInput: WalletProfile[],
+  timeframe: '24h' | '7d' | '30d' | 'all' = 'all',
+  sortBy: 'dynamic' | 'capitalEfficiency' | 'profit' | 'winrate' | 'activity' = 'dynamic',
+  excludeMarketMakers: boolean = true,
+  activityFilter: 'all' | 'hot' | 'active' = 'all'
+): WalletProfile[] {
+  let list = [...listInput].filter((w) => w.chain === 'solana');
+
   if (excludeMarketMakers) {
     list = list.filter((w) => w.isCopyTradeable !== false);
   }
 
-  // Activity Filter
   if (activityFilter === 'hot') {
     list = list.filter((w) => w.activityStatus === 'HOT_ACTIVE');
   } else if (activityFilter === 'active') {
@@ -908,6 +949,18 @@ export function getRankedWallets(
   }
 
   return scoredList.map((w, idx) => ({ ...w, rank: idx + 1 }));
+}
+
+// Synchronous fallback
+export function getRankedWallets(
+  chain?: ChainId | 'all',
+  timeframe: '24h' | '7d' | '30d' | 'all' = 'all',
+  sortBy: 'dynamic' | 'capitalEfficiency' | 'profit' | 'winrate' | 'activity' = 'dynamic',
+  excludeMarketMakers: boolean = true,
+  activityFilter: 'all' | 'hot' | 'active' = 'all'
+): WalletProfile[] {
+  const source = cachedLiveWallets ? cachedLiveWallets.wallets : SEED_WALLETS;
+  return rankWalletList(source, timeframe, sortBy, excludeMarketMakers, activityFilter);
 }
 
 // Find a single wallet profile by address or inspect on-chain via Helius

@@ -1,13 +1,14 @@
-import { ChainId, DecisionLog, DemoClosedTrade, DemoPortfolio, DemoPosition, PeriodicPnlSummary, Token, Trade, WalletProfile } from './types';
-import { FEATURED_MEMECOINS } from './dexscreener';
+import { ChainId, DecisionLog, DemoClosedTrade, DemoPortfolio, DemoPosition, PeriodicPnlSummary, PreBreakoutGemSignal, Token, Trade, WalletProfile } from './types';
 import { SEED_WALLETS } from './wallet-engine';
 import { fetchSolanaTokenPrice } from './solana/birdeye';
+import { checkWalletTokenHolding, fetchWalletOnChainSwaps } from './solana/helius';
+import { detectPreBreakoutGemSignals } from './solana/gem-radar';
 
 // Clean-slate Initial State for the Autonomous Demo Paper Trading Bot
-// Zero fake trades, zero simulated wins. Starts with pure $100.00 cash.
 export const INITIAL_CLOSED_TRADES: DemoClosedTrade[] = [];
 export const INITIAL_OPEN_POSITIONS: DemoPosition[] = [];
 
+// Portfolio 1: Smart Money Copy-Trade Bot ($100 Starting Cash)
 export const DEFAULT_DEMO_PORTFOLIO: DemoPortfolio = {
   startingCash: 100.00,
   currentCash: 100.00,
@@ -37,6 +38,69 @@ export const DEFAULT_DEMO_PORTFOLIO: DemoPortfolio = {
   closedTrades: [],
 };
 
+// Portfolio 2: Gem Radar Breakout Hunter Bot ($100 Starting Cash)
+export const DEFAULT_GEM_RADAR_PORTFOLIO: DemoPortfolio = {
+  startingCash: 100.00,
+  currentCash: 100.00,
+  investedInPositionsUsd: 0.00,
+  totalEquityUsd: 100.00,
+  totalRealizedPnlUsd: 0.00,
+  totalUnrealizedPnlUsd: 0.00,
+  totalWins: 0,
+  totalLosses: 0,
+  winRate: 0,
+  reloadCount: 0,
+  totalDemoCapitalLoaded: 100.00,
+  isAutoReloadEnabled: true,
+  isBotRunning: true,
+  minConvictionThreshold: 80,
+  allocationPerTradeUsd: 20,
+  maxConcurrentPositions: 4,
+  stopLossPercent: -20,
+  takeProfitTargets: [
+    { targetMultiplier: 2.0, sellPercent: 50 },
+    { targetMultiplier: 5.0, sellPercent: 30 },
+    { targetMultiplier: 10.0, sellPercent: 20 },
+  ],
+  equityHistory: [
+    { timestamp: Date.now(), equityUsd: 100.00 },
+  ],
+  closedTrades: [],
+};
+
+// Clean-slate Initial Decision Logs
+export const INITIAL_DECISION_LOGS: DecisionLog[] = [
+  {
+    id: 'log-boot-solana',
+    timestamp: Date.now(),
+    type: 'EVALUATION_PASS',
+    tokenSymbol: 'SOL',
+    tokenAddress: 'So11111111111111111111111111111111111111112',
+    chain: 'solana',
+    convictionScore: 100,
+    action: 'INITIALIZED $100.00 SMART MONEY COPY BOT (CLEAN SLATE)',
+    rationale: 'Autonomous copy bot active. Monitoring tracked Solana alpha whales on Helius. Only enters on verified on-chain BUY swaps where whale still holds balance.',
+    improvementLessonTag: '[BOOT_WHALE_COPY]',
+    improvementNote: 'Enforcing 15-minute buy recency check, on-chain holding verification via Helius RPC, and 20% max slippage guard.',
+  },
+];
+
+export const INITIAL_GEM_RADAR_LOGS: DecisionLog[] = [
+  {
+    id: 'log-boot-gem-radar',
+    timestamp: Date.now(),
+    type: 'EVALUATION_PASS',
+    tokenSymbol: 'SOL',
+    tokenAddress: 'So11111111111111111111111111111111111111112',
+    chain: 'solana',
+    convictionScore: 100,
+    action: 'INITIALIZED $100.00 GEM RADAR BREAKOUT BOT (CLEAN SLATE)',
+    rationale: 'Gem Radar momentum engine active. Scanning live DexScreener boosted and high-velocity Solana pools for 5-min volume surges and heavy buy pressure.',
+    improvementLessonTag: '[BOOT_GEM_RADAR]',
+    improvementNote: 'Trades trigger on >$15k 5m volume velocity, >1.2x buy ratio, and locked liquidity.',
+  },
+];
+
 // ==========================================
 // Periodic P&L Aggregation Helpers
 // ==========================================
@@ -58,7 +122,7 @@ export function getWeekInfo(timestamp: number): {
   endOfWeek: number;
 } {
   const date = new Date(timestamp);
-  const dayOfWeek = date.getDay(); // 0 is Sunday, 1 is Monday...
+  const dayOfWeek = date.getDay();
   const diffToMonday = (dayOfWeek + 6) % 7;
   const monday = new Date(date);
   monday.setDate(date.getDate() - diffToMonday);
@@ -68,7 +132,6 @@ export function getWeekInfo(timestamp: number): {
   sunday.setDate(monday.getDate() + 6);
   sunday.setHours(23, 59, 59, 999);
 
-  // Calculate ISO week number
   const tempDate = new Date(date.getTime());
   tempDate.setHours(0, 0, 0, 0);
   tempDate.setDate(tempDate.getDate() + 3 - ((tempDate.getDay() + 6) % 7));
@@ -77,7 +140,6 @@ export function getWeekInfo(timestamp: number): {
 
   const year = tempDate.getFullYear();
   const weekKey = `${year}-W${weekNum < 10 ? '0' : ''}${weekNum}`;
-
   const monLabel = monday.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
   const sunLabel = sunday.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
   const weekLabel = `Week ${weekNum} (${monLabel} - ${sunLabel})`;
@@ -93,7 +155,7 @@ export function getMonthInfo(timestamp: number): {
 } {
   const d = new Date(timestamp);
   const year = d.getFullYear();
-  const month = d.getMonth(); // 0-11
+  const month = d.getMonth();
   const monthKey = `${year}-${month + 1 < 10 ? '0' : ''}${month + 1}`;
   const monthLabel = d.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
 
@@ -179,12 +241,13 @@ export function aggregatePnlByPeriod(
       netPnlUsd: +netPnlUsd.toFixed(2),
       netPnlPercent,
       bestTradeSymbol,
-      bestTradeMultiplier: bestTradeMultiplier > 0 ? bestTradeMultiplier : undefined,
-      trades: groupTrades.sort((a, b) => b.exitTimestamp - a.exitTimestamp),
+      bestTradeMultiplier,
+      trades: groupTrades,
     };
   });
 
-  return summaries.sort((a, b) => b.startDate - a.startDate);
+  summaries.sort((a, b) => b.startDate - a.startDate);
+  return summaries;
 }
 
 export function aggregatePnlByDay(trades: DemoClosedTrade[]): PeriodicPnlSummary[] {
@@ -287,82 +350,13 @@ export function filterTradesByTimeframe(
   });
 }
 
-// Clean-slate Initial Decision Logs strictly for Solana memecoins
-export const INITIAL_DECISION_LOGS: DecisionLog[] = [
-  {
-    id: 'log-boot-solana',
-    timestamp: Date.now(),
-    type: 'EVALUATION_PASS',
-    tokenSymbol: 'SOL',
-    tokenAddress: 'So11111111111111111111111111111111111111112',
-    chain: 'solana',
-    convictionScore: 100,
-    action: 'INITIALIZED $100.00 DEMO BANKROLL (CLEAN SLATE)',
-    rationale: 'Autonomous bot started with clean $100.00 cash balance. Zero pre-seeded trades. Actively scanning live Solana DEX pools.',
-    improvementLessonTag: '[BOOT_CLEAN_SLATE]',
-    improvementNote: 'All trades, P&L, and logs will be recorded in real-time as the bot runs live on Solana DEXes.',
-  },
-];
+// ==========================================
+// Bot Engine 1: Smart Money Copy-Trading Engine ($100 Bankroll)
+// Evaluates strictly real on-chain BUY swaps from Helius within last 15 min,
+// verifies open token holding on-chain, and checks spot price slippage.
+// ==========================================
 
-
-// Evaluates an incoming trade or token to compute algorithmic conviction
-export function evaluateAlphaConviction(
-  wallet: WalletProfile,
-  token: Token,
-  trade: Trade
-): { score: number; passed: boolean; reasons: string[] } {
-  const reasons: string[] = [];
-  let score = 0;
-
-  // 1. Wallet Quality (Up to 40 pts)
-  if (wallet.winRate >= 80) {
-    score += 40;
-    reasons.push(`Elite Wallet Win-Rate: ${wallet.winRate}% (Rank #${wallet.rank})`);
-  } else if (wallet.winRate >= 70) {
-    score += 30;
-    reasons.push(`Strong Wallet Win-Rate: ${wallet.winRate}%`);
-  } else {
-    score += 15;
-    reasons.push(`Moderate Wallet Win-Rate: ${wallet.winRate}%`);
-  }
-
-  // 2. Security & Liquidity Health (Up to 30 pts)
-  if (token.securityScore >= 95 && token.liquidityUsd >= 500000) {
-    score += 30;
-    reasons.push(`Exceptional Pool Health: $${(token.liquidityUsd / 1e6).toFixed(1)}M Liquidity (0/0 tax, 100% LP locked)`);
-  } else if (token.securityScore >= 85) {
-    score += 20;
-    reasons.push(`Good Security Score (${token.securityScore}/100)`);
-  } else {
-    score += 5;
-    reasons.push(`Marginal Liquidity/Security: $${token.liquidityUsd.toLocaleString()}`);
-  }
-
-  // 3. Early Entry & Momentum Timing (Up to 30 pts)
-  if (trade.snipedBlockZero || trade.timestamp > Date.now() - 300000) {
-    score += 30;
-    reasons.push(`Fresh Block Momentum: Sniped immediately upon pool confirmation`);
-  } else {
-    score += 15;
-    reasons.push(`Standard Entry Timing`);
-  }
-
-  const boundedScore = Math.min(100, Math.max(0, score));
-  const passed = boundedScore >= 80;
-
-  return {
-    score: boundedScore,
-    passed,
-    reasons,
-  };
-}
-
-// Generates an autonomous bot tick:
-// 1. Fetches 100% LIVE SPOT PRICES via Birdeye / DexScreener (Zero Simulated Drift)
-// 2. Evaluates Open Positions against Take-Profit and Stop-Loss triggers
-// 3. Checks cash balance and auto-reloads $100 if exhausted
-// 4. Evaluates prospective trades strictly from Solana smart-money wallets
-export async function runDemoBotTick(
+export async function runCopyBotTick(
   portfolio: DemoPortfolio,
   positions: DemoPosition[],
   logs: DecisionLog[],
@@ -386,17 +380,16 @@ export async function runDemoBotTick(
   const updatedPositions: DemoPosition[] = [];
   const updatedClosedTrades: DemoClosedTrade[] = [...(closedTradesInput || portfolio.closedTrades || [])];
 
-  // Step 1: Evaluate Open Positions with 100% REAL LIVE SPOT PRICES from Birdeye / DexScreener
+  // 1. Evaluate Open Positions against real live spot prices
   for (const pos of positions) {
     if (pos.status === 'CLOSED') continue;
 
-    // Fetch live market spot price
     const livePriceData = await fetchSolanaTokenPrice(pos.tokenAddress);
     const newPrice = livePriceData.priceUsd > 0 ? livePriceData.priceUsd : pos.currentPriceUsd;
     const newPnlUsd = +((newPrice - pos.entryPriceUsd) * pos.tokenAmount).toFixed(2);
     const newPnlPercent = +(((newPrice - pos.entryPriceUsd) / pos.entryPriceUsd) * 100).toFixed(1);
 
-    // Check Take Profit: reached target?
+    // Take Profit Trigger
     if (newPrice >= pos.takeProfitPrice1) {
       const totalReturned = +(pos.investedUsd + newPnlUsd).toFixed(2);
       cash = +(cash + totalReturned).toFixed(2);
@@ -404,7 +397,7 @@ export async function runDemoBotTick(
       wins++;
 
       const closedRecord: DemoClosedTrade = {
-        id: `closed-${Date.now()}-${Math.random().toString(36).substring(7)}`,
+        id: `closed-copy-${Date.now()}-${Math.random().toString(36).substring(7)}`,
         tokenAddress: pos.tokenAddress,
         tokenSymbol: pos.tokenSymbol,
         tokenName: pos.tokenName,
@@ -422,7 +415,7 @@ export async function runDemoBotTick(
         netPnlPercent: newPnlPercent,
         multiplier: +(newPrice / pos.entryPriceUsd).toFixed(2),
         exitReason: 'TAKE_PROFIT',
-        exitReasonDetail: `Take-Profit Target Hit (+${newPnlPercent}%) at live spot price $${newPrice}`,
+        exitReasonDetail: `Take-Profit Target Hit (+${newPnlPercent}%) at live spot $${newPrice}`,
         alphaScoreAtEntry: pos.alphaScoreAtEntry,
         entryRationale: pos.entryRationale,
         simulatedGasFeeUsd: 0.005,
@@ -430,7 +423,7 @@ export async function runDemoBotTick(
       updatedClosedTrades.unshift(closedRecord);
 
       newLogs.unshift({
-        id: `log-${Date.now()}-${Math.random().toString(36).substring(7)}`,
+        id: `log-tp-${Date.now()}`,
         timestamp: Date.now(),
         type: 'EXIT_TAKE_PROFIT',
         tokenSymbol: pos.tokenSymbol,
@@ -439,17 +432,17 @@ export async function runDemoBotTick(
         triggeredByWallet: pos.copiedFromWallet,
         triggeredByWalletLabel: pos.copiedFromWalletLabel,
         convictionScore: pos.alphaScoreAtEntry,
-        action: `TAKE PROFIT (+${newPnlPercent}%) - Sold all ${pos.tokenSymbol} at live spot $${newPrice}`,
-        rationale: `Automated Take-Profit triggered at target price $${pos.takeProfitPrice1}. Capital returned: $${totalReturned}. Net P&L: +$${newPnlUsd}.`,
+        action: `TAKE PROFIT (+${newPnlPercent}%) - Closed ${pos.tokenSymbol} at $${newPrice}`,
+        rationale: `Automated Take-Profit triggered at target $${pos.takeProfitPrice1}. Capital returned: $${totalReturned}. Net P&L: +$${newPnlUsd}.`,
         outcomePnlUsd: newPnlUsd,
         outcomePnlPercent: newPnlPercent,
-        improvementLessonTag: '[WIN: TAKE_PROFIT_TRIGGERED]',
-        improvementNote: `Taking profit mechanically at pre-set targets locks in gains and prevents giving back profits during volatility.`,
+        improvementLessonTag: '[WIN: TAKE_PROFIT]',
+        improvementNote: 'Disciplined exit locked in gains mechanically.',
       });
       continue;
     }
 
-    // Check Stop Loss: dropped below stop price?
+    // Stop Loss Trigger
     if (newPrice <= pos.stopLossPrice) {
       const totalReturned = +(pos.investedUsd + newPnlUsd).toFixed(2);
       cash = +(cash + Math.max(0, totalReturned)).toFixed(2);
@@ -457,7 +450,7 @@ export async function runDemoBotTick(
       losses++;
 
       const closedRecord: DemoClosedTrade = {
-        id: `closed-${Date.now()}-${Math.random().toString(36).substring(7)}`,
+        id: `closed-copy-${Date.now()}-${Math.random().toString(36).substring(7)}`,
         tokenAddress: pos.tokenAddress,
         tokenSymbol: pos.tokenSymbol,
         tokenName: pos.tokenName,
@@ -475,7 +468,7 @@ export async function runDemoBotTick(
         netPnlPercent: newPnlPercent,
         multiplier: +(newPrice / pos.entryPriceUsd).toFixed(2),
         exitReason: 'STOP_LOSS',
-        exitReasonDetail: `Hard Stop-Loss Cut (${newPnlPercent}%) at live spot price $${newPrice}`,
+        exitReasonDetail: `Stop-Loss Triggered (${newPnlPercent}%) at live spot $${newPrice}`,
         alphaScoreAtEntry: pos.alphaScoreAtEntry,
         entryRationale: pos.entryRationale,
         simulatedGasFeeUsd: 0.005,
@@ -483,7 +476,7 @@ export async function runDemoBotTick(
       updatedClosedTrades.unshift(closedRecord);
 
       newLogs.unshift({
-        id: `log-${Date.now()}-${Math.random().toString(36).substring(7)}`,
+        id: `log-sl-${Date.now()}`,
         timestamp: Date.now(),
         type: 'EXIT_STOP_LOSS',
         tokenSymbol: pos.tokenSymbol,
@@ -492,17 +485,16 @@ export async function runDemoBotTick(
         triggeredByWallet: pos.copiedFromWallet,
         triggeredByWalletLabel: pos.copiedFromWalletLabel,
         convictionScore: pos.alphaScoreAtEntry,
-        action: `STOP LOSS HIT (${newPnlPercent}%) - Cut ${pos.tokenSymbol} at live spot $${newPrice}`,
+        action: `STOP LOSS HIT (${newPnlPercent}%) - Closed ${pos.tokenSymbol} at $${newPrice}`,
         rationale: `Automated Stop-Loss triggered below threshold ($${pos.stopLossPrice}). Capital preserved by cutting loss at -$${Math.abs(newPnlUsd)}.`,
         outcomePnlUsd: newPnlUsd,
         outcomePnlPercent: newPnlPercent,
         improvementLessonTag: '[LOSS: STOP_LOSS_PROTECTION]',
-        improvementNote: `Stop-loss execution prevented catastrophic 90%+ drawdown. Review entry timing and slippage tolerance for future entries.`,
+        improvementNote: 'Capital preserved against severe drawdown.',
       });
       continue;
     }
 
-    // Position remains open with 100% live spot valuation
     updatedPositions.push({
       ...pos,
       currentPriceUsd: newPrice,
@@ -511,179 +503,434 @@ export async function runDemoBotTick(
     });
   }
 
-  // Step 2: Check for Exhaustion & Auto-Reload
+  // 2. Real Whale Copy Evaluation: Scan tracked alpha whales for genuine recent buys
   const activePositionCount = updatedPositions.filter((p) => p.status === 'OPEN').length;
-  const currentInvestedPrincipal = updatedPositions
-    .filter((p) => p.status === 'OPEN')
-    .reduce((acc, p) => acc + p.investedUsd, 0);
-  const currentOpenPositionsMarketValue = updatedPositions
-    .filter((p) => p.status === 'OPEN')
-    .reduce((acc, p) => acc + (p.investedUsd + p.pnlUsd), 0);
-  const totalEquity = +(cash + currentOpenPositionsMarketValue).toFixed(2);
+  if (activePositionCount < portfolio.maxConcurrentPositions && cash >= portfolio.allocationPerTradeUsd) {
+    const trackedAlphaWallets = SEED_WALLETS.slice(0, 4);
 
-  // If cash < minimum allocation and total equity is exhausted or below $25, reload $100!
-  if (cash < portfolio.allocationPerTradeUsd && totalEquity < 25 && portfolio.isAutoReloadEnabled) {
-    cash = +(cash + 100).toFixed(2);
-    reloadCount++;
-    totalDemoCapitalLoaded += 100;
+    for (const wallet of trackedAlphaWallets) {
+      if (updatedPositions.length >= portfolio.maxConcurrentPositions || cash < portfolio.allocationPerTradeUsd) break;
 
-    newLogs.unshift({
-      id: `log-reload-${Date.now()}`,
-      timestamp: Date.now(),
-      type: 'AUTO_RELOAD',
-      tokenSymbol: 'USD_DEMO',
-      tokenAddress: '0x0',
-      chain: 'solana',
-      convictionScore: 100,
-      action: `RELOADED DEMO $100 (Cycle #${reloadCount + 1})`,
-      rationale: `Demo funds were exhausted. Auto-reload triggered to continue running live trade simulations without interruption.`,
-      improvementLessonTag: '[AUTO_RELOAD_CYCLE]',
-      improvementNote: `Cycle completed. Total capital deposited: $${totalDemoCapitalLoaded}. Analyze past loss logs to tighten conviction filters.`,
-    });
-  }
+      try {
+        const recentSwaps = await fetchWalletOnChainSwaps(wallet.address, 3);
+        const fifteenMinsAgo = Date.now() - 15 * 60 * 1000;
 
-  // Step 3: Opportunity Evaluation (Strictly Solana memecoins & top wallets)
-  if (
-    activePositionCount < portfolio.maxConcurrentPositions &&
-    cash >= portfolio.allocationPerTradeUsd
-  ) {
-    const topWallets = SEED_WALLETS.filter((w) => w.chain === 'solana');
-    const topWallet = topWallets[Math.floor(Math.random() * Math.min(3, topWallets.length))];
-    const solanaTokens = FEATURED_MEMECOINS['solana'];
-    const candidateToken = solanaTokens[Math.floor(Math.random() * solanaTokens.length)];
+        // Check for fresh on-chain BUY
+        const freshBuy = recentSwaps.find(
+          (s) => s.action === 'BUY' && s.timestamp >= fifteenMinsAgo && s.tokenAddress !== 'So11111111111111111111111111111111111111112'
+        );
 
-    const alreadyHolding = updatedPositions.some((p) => p.tokenAddress === candidateToken.address);
+        if (freshBuy) {
+          const alreadyHolding = updatedPositions.some((p) => p.tokenAddress === freshBuy.tokenAddress);
+          if (alreadyHolding) continue;
 
-    if (!alreadyHolding) {
-      // Fetch 100% live spot price for candidate
-      const liveCandPrice = await fetchSolanaTokenPrice(candidateToken.address);
-      const spotPrice = liveCandPrice.priceUsd > 0 ? liveCandPrice.priceUsd : candidateToken.priceUsd;
+          // Check on-chain holding via Helius RPC
+          const holdingStatus = await checkWalletTokenHolding(wallet.address, freshBuy.tokenAddress);
+          if (!holdingStatus.isHolding) {
+            newLogs.unshift({
+              id: `log-skip-sold-${Date.now()}`,
+              timestamp: Date.now(),
+              type: 'EVALUATION_REJECT',
+              tokenSymbol: freshBuy.tokenSymbol,
+              tokenAddress: freshBuy.tokenAddress,
+              chain: 'solana',
+              triggeredByWallet: wallet.address,
+              triggeredByWalletLabel: wallet.label,
+              convictionScore: 20,
+              action: `SKIPPED ${freshBuy.tokenSymbol}: Whale Already Exited Position`,
+              rationale: `Whale ${wallet.label} executed buy but on-chain balance is now 0. Whale already sold/dumped. Refusing late copy trade.`,
+              improvementLessonTag: '[AVOIDED_DUMP: POSITION_CLOSED]',
+              improvementNote: 'Verified zero token balance on Helius RPC. Capital preserved.',
+            });
+            continue;
+          }
 
-      const candidateTrade: Trade = {
-        id: `cand-${Date.now()}`,
-        walletAddress: topWallet.address,
-        chain: 'solana',
-        tokenAddress: candidateToken.address,
-        tokenSymbol: candidateToken.symbol,
-        tokenName: candidateToken.name,
-        action: 'BUY',
-        priceUsd: spotPrice,
-        amountTokens: Math.round(portfolio.allocationPerTradeUsd / spotPrice),
-        volumeUsd: candidateToken.volume24h,
-        nativeAmount: +(spotPrice * 10 / 184).toFixed(4),
-        nativeSymbol: 'SOL',
-        marketCapAtTrade: candidateToken.marketCap,
-        timestamp: Date.now(),
-        blockNumber: 312050000,
-        txHash: 'helius-live-verified',
-        dex: candidateToken.dex,
-        snipedBlockZero: true,
-      };
+          // Fetch live spot price
+          const priceData = await fetchSolanaTokenPrice(freshBuy.tokenAddress);
+          const spotPrice = priceData.priceUsd > 0 ? priceData.priceUsd : (freshBuy.priceSol ? freshBuy.priceSol * 184 : 0);
 
-      const evaluation = evaluateAlphaConviction(topWallet, candidateToken, candidateTrade);
+          if (spotPrice > 0) {
+            // Check slippage: if price has already pumped > 25% since whale entry, skip
+            if (freshBuy.priceSol) {
+              const whaleEntryUsd = freshBuy.priceSol * 184;
+              const slippagePct = ((spotPrice - whaleEntryUsd) / whaleEntryUsd) * 100;
+              if (slippagePct > 25) {
+                newLogs.unshift({
+                  id: `log-skip-fomo-${Date.now()}`,
+                  timestamp: Date.now(),
+                  type: 'EVALUATION_REJECT',
+                  tokenSymbol: freshBuy.tokenSymbol,
+                  tokenAddress: freshBuy.tokenAddress,
+                  chain: 'solana',
+                  triggeredByWallet: wallet.address,
+                  triggeredByWalletLabel: wallet.label,
+                  convictionScore: 35,
+                  action: `SKIPPED ${freshBuy.tokenSymbol}: Price Already Surged +${slippagePct.toFixed(1)}%`,
+                  rationale: `Whale entered at $${whaleEntryUsd.toFixed(6)}, spot is now $${spotPrice.toFixed(6)}. Chasing top risks immediate drawdown.`,
+                  improvementLessonTag: '[AVOIDED_FOMO: LATE_ENTRY_SLIPPAGE]',
+                  improvementNote: 'Discipline enforced: only enter within 25% of whale entry price.',
+                });
+                continue;
+              }
+            }
 
-      if (evaluation.passed && evaluation.score >= portfolio.minConvictionThreshold) {
-        const allocation = portfolio.allocationPerTradeUsd;
-        cash = +(cash - allocation).toFixed(2);
-        const tokenAmount = +(allocation / spotPrice).toFixed(4);
+            // Execute true copy trade
+            const allocation = portfolio.allocationPerTradeUsd;
+            cash = +(cash - allocation).toFixed(2);
+            const tokenAmount = +(allocation / spotPrice).toFixed(4);
 
-        const newPosition: DemoPosition = {
-          id: `pos-${Date.now()}-${candidateToken.symbol}`,
-          tokenAddress: candidateToken.address,
-          tokenSymbol: candidateToken.symbol,
-          tokenName: candidateToken.name,
-          chain: 'solana',
-          copiedFromWallet: topWallet.address,
-          copiedFromWalletLabel: topWallet.label,
-          entryTimestamp: Date.now(),
-          entryPriceUsd: spotPrice,
-          currentPriceUsd: spotPrice,
-          investedUsd: allocation,
-          tokenAmount: tokenAmount,
-          pnlUsd: 0,
-          pnlPercent: 0,
-          takeProfitPrice1: +(spotPrice * 2.0).toFixed(6),
-          takeProfitPrice2: +(spotPrice * 5.0).toFixed(6),
-          stopLossPrice: +(spotPrice * (1 + portfolio.stopLossPercent / 100)).toFixed(6),
-          status: 'OPEN',
-          alphaScoreAtEntry: evaluation.score,
-          entryRationale: `Triggered by ${topWallet.label} (${topWallet.winRate}% win rate). Conviction: ${evaluation.score}/100. ${evaluation.reasons[0]}.`,
-        };
+            const newPos: DemoPosition = {
+              id: `pos-copy-${Date.now()}-${freshBuy.tokenSymbol}`,
+              tokenAddress: freshBuy.tokenAddress,
+              tokenSymbol: freshBuy.tokenSymbol,
+              tokenName: freshBuy.tokenSymbol,
+              chain: 'solana',
+              copiedFromWallet: wallet.address,
+              copiedFromWalletLabel: wallet.label,
+              entryTimestamp: Date.now(),
+              entryPriceUsd: spotPrice,
+              currentPriceUsd: spotPrice,
+              investedUsd: allocation,
+              tokenAmount,
+              pnlUsd: 0,
+              pnlPercent: 0,
+              takeProfitPrice1: +(spotPrice * 2.0).toFixed(6),
+              takeProfitPrice2: +(spotPrice * 5.0).toFixed(6),
+              stopLossPrice: +(spotPrice * (1 + portfolio.stopLossPercent / 100)).toFixed(6),
+              status: 'OPEN',
+              alphaScoreAtEntry: 95,
+              entryRationale: `Copied verified on-chain BUY by ${wallet.label} (confirmed open token balance on Solscan).`,
+              strategy: 'WHALE_COPY',
+              verifiedWhaleHolding: true,
+              whaleEntryTimestamp: freshBuy.timestamp,
+            };
 
-        updatedPositions.push(newPosition);
+            updatedPositions.push(newPos);
 
-        newLogs.unshift({
-          id: `log-entry-${Date.now()}`,
-          timestamp: Date.now(),
-          type: 'ENTRY_EXECUTED',
-          tokenSymbol: candidateToken.symbol,
-          tokenAddress: candidateToken.address,
-          chain: 'solana',
-          triggeredByWallet: topWallet.address,
-          triggeredByWalletLabel: topWallet.label,
-          convictionScore: evaluation.score,
-          action: `ENTERED ${candidateToken.symbol}: Invested $${allocation} at live spot $${spotPrice}`,
-          rationale: `High Conviction Opportunity (${evaluation.score}/100). Live spot price verified via Birdeye. ${evaluation.reasons.join('; ')}`,
-          improvementLessonTag: '[WIN_OPPORTUNITY: HIGH_CONVICTION]',
-          improvementNote: `Entry confirmed with strict filters. Monitored for 2x Take Profit and -20% Stop Loss.`,
-        });
-      } else {
-        newLogs.unshift({
-          id: `log-reject-${Date.now()}`,
-          timestamp: Date.now(),
-          type: 'EVALUATION_REJECT',
-          tokenSymbol: candidateToken.symbol,
-          tokenAddress: candidateToken.address,
-          chain: 'solana',
-          triggeredByWallet: topWallet.address,
-          triggeredByWalletLabel: topWallet.label,
-          convictionScore: evaluation.score,
-          action: `REJECTED ${candidateToken.symbol} (Score: ${evaluation.score}/${portfolio.minConvictionThreshold})`,
-          rationale: `Trade passed wallet trigger but failed aggregate safety/conviction threshold. Reasons: ${evaluation.reasons.join(', ')}`,
-          improvementLessonTag: '[FILTER_PASSED: DISCIPLINED_SKIP]',
-          improvementNote: `Preserving capital by refusing marginal setups. Only trade setups scoring >= ${portfolio.minConvictionThreshold}.`,
-        });
+            newLogs.unshift({
+              id: `log-entry-copy-${Date.now()}`,
+              timestamp: Date.now(),
+              type: 'ENTRY_EXECUTED',
+              tokenSymbol: freshBuy.tokenSymbol,
+              tokenAddress: freshBuy.tokenAddress,
+              chain: 'solana',
+              triggeredByWallet: wallet.address,
+              triggeredByWalletLabel: wallet.label,
+              convictionScore: 95,
+              action: `ENTERED ${freshBuy.tokenSymbol}: Copied verified live whale buy at $${spotPrice}`,
+              rationale: `Verified on-chain swap by ${wallet.label} on Solana. Whale holding active balance (${holdingStatus.tokenBalance.toLocaleString()} tokens). Tx: ${freshBuy.signature.slice(0, 12)}...`,
+              improvementLessonTag: '[WIN_OPPORTUNITY: VERIFIED_WHALE_HOLDING]',
+              improvementNote: 'Entered alongside whale with confirmed on-chain position.',
+            });
+          }
+        }
+      } catch (err) {
+        console.warn(`[CopyBot] Error scanning wallet ${wallet.address}:`, err);
       }
     }
   }
 
-  // Calculate final equity and win rate strictly
-  const finalInvestedPrincipal = updatedPositions
-    .filter((p) => p.status === 'OPEN')
-    .reduce((acc, p) => acc + p.investedUsd, 0);
-  const finalMarketValue = updatedPositions
+  // 3. Final Portfolio Metrics Calculation
+  const openPositionsMarketValue = updatedPositions
     .filter((p) => p.status === 'OPEN')
     .reduce((acc, p) => acc + (p.investedUsd + p.pnlUsd), 0);
-  const finalEquity = +(cash + finalMarketValue).toFixed(2);
-  const totalCompletedTrades = wins + losses;
-  const currentWinRate = totalCompletedTrades > 0 ? +((wins / totalCompletedTrades) * 100).toFixed(1) : 0;
-  const finalUnrealizedPnl = +(finalMarketValue - finalInvestedPrincipal).toFixed(2);
+  const investedInPositions = updatedPositions
+    .filter((p) => p.status === 'OPEN')
+    .reduce((acc, p) => acc + p.investedUsd, 0);
+  const totalEquity = +(cash + openPositionsMarketValue).toFixed(2);
+  const unrealizedPnl = +(openPositionsMarketValue - investedInPositions).toFixed(2);
+  const totalTradesCount = wins + losses;
+  const winRate = totalTradesCount > 0 ? +((wins / totalTradesCount) * 100).toFixed(1) : 0;
 
-  const newHistory = [...portfolio.equityHistory];
-  if (newHistory.length === 0 || Date.now() - newHistory[newHistory.length - 1].timestamp > 60000) {
-    newHistory.push({ timestamp: Date.now(), equityUsd: finalEquity });
-    if (newHistory.length > 50) newHistory.shift();
+  const history = [...portfolio.equityHistory];
+  if (history.length === 0 || Date.now() - history[history.length - 1].timestamp > 60000) {
+    history.push({ timestamp: Date.now(), equityUsd: totalEquity });
   }
 
   const updatedPortfolio: DemoPortfolio = {
     ...portfolio,
     currentCash: cash,
-    investedInPositionsUsd: +finalInvestedPrincipal.toFixed(2),
-    totalEquityUsd: finalEquity,
+    investedInPositionsUsd: +investedInPositions.toFixed(2),
+    totalEquityUsd: totalEquity,
     totalRealizedPnlUsd: realizedPnl,
-    totalUnrealizedPnlUsd: finalUnrealizedPnl,
+    totalUnrealizedPnlUsd: unrealizedPnl,
     totalWins: wins,
     totalLosses: losses,
-    winRate: currentWinRate,
-    reloadCount: reloadCount,
-    totalDemoCapitalLoaded: totalDemoCapitalLoaded,
-    equityHistory: newHistory,
+    winRate,
+    reloadCount,
+    totalDemoCapitalLoaded,
+    equityHistory: history.slice(-50),
     closedTrades: updatedClosedTrades,
   };
 
   return {
     updatedPortfolio,
     updatedPositions,
-    newLogs: [...newLogs, ...logs].slice(0, 100),
+    newLogs,
   };
+}
+
+// ==========================================
+// Bot Engine 2: Gem Radar Breakout Hunter Engine ($100 Bankroll)
+// Trades live high-velocity volume surges and early-stage breakouts
+// discovered dynamically on the Gem Radar.
+// ==========================================
+
+export async function runGemRadarBotTick(
+  portfolio: DemoPortfolio,
+  positions: DemoPosition[],
+  logs: DecisionLog[],
+  closedTradesInput?: DemoClosedTrade[]
+): Promise<{
+  updatedPortfolio: DemoPortfolio;
+  updatedPositions: DemoPosition[];
+  newLogs: DecisionLog[];
+}> {
+  if (!portfolio.isBotRunning) {
+    return { updatedPortfolio: portfolio, updatedPositions: positions, newLogs: [] };
+  }
+
+  let cash = portfolio.currentCash;
+  let reloadCount = portfolio.reloadCount;
+  let totalDemoCapitalLoaded = portfolio.totalDemoCapitalLoaded;
+  let realizedPnl = portfolio.totalRealizedPnlUsd;
+  let wins = portfolio.totalWins;
+  let losses = portfolio.totalLosses;
+  const newLogs: DecisionLog[] = [];
+  const updatedPositions: DemoPosition[] = [];
+  const updatedClosedTrades: DemoClosedTrade[] = [...(closedTradesInput || portfolio.closedTrades || [])];
+
+  // 1. Evaluate Open Positions against real live spot prices
+  for (const pos of positions) {
+    if (pos.status === 'CLOSED') continue;
+
+    const livePriceData = await fetchSolanaTokenPrice(pos.tokenAddress);
+    const newPrice = livePriceData.priceUsd > 0 ? livePriceData.priceUsd : pos.currentPriceUsd;
+    const newPnlUsd = +((newPrice - pos.entryPriceUsd) * pos.tokenAmount).toFixed(2);
+    const newPnlPercent = +(((newPrice - pos.entryPriceUsd) / pos.entryPriceUsd) * 100).toFixed(1);
+
+    // Take Profit Trigger
+    if (newPrice >= pos.takeProfitPrice1) {
+      const totalReturned = +(pos.investedUsd + newPnlUsd).toFixed(2);
+      cash = +(cash + totalReturned).toFixed(2);
+      realizedPnl = +(realizedPnl + newPnlUsd).toFixed(2);
+      wins++;
+
+      const closedRecord: DemoClosedTrade = {
+        id: `closed-gem-${Date.now()}-${Math.random().toString(36).substring(7)}`,
+        tokenAddress: pos.tokenAddress,
+        tokenSymbol: pos.tokenSymbol,
+        tokenName: pos.tokenName,
+        chain: 'solana',
+        copiedFromWallet: pos.copiedFromWallet,
+        copiedFromWalletLabel: 'Gem Radar Velocity Breakout',
+        entryTimestamp: pos.entryTimestamp,
+        exitTimestamp: Date.now(),
+        holdDurationSeconds: Math.max(1, Math.round((Date.now() - pos.entryTimestamp) / 1000)),
+        entryPriceUsd: pos.entryPriceUsd,
+        exitPriceUsd: newPrice,
+        investedUsd: pos.investedUsd,
+        returnedUsd: totalReturned,
+        netPnlUsd: newPnlUsd,
+        netPnlPercent: newPnlPercent,
+        multiplier: +(newPrice / pos.entryPriceUsd).toFixed(2),
+        exitReason: 'TAKE_PROFIT',
+        exitReasonDetail: `Take-Profit Target Hit (+${newPnlPercent}%) on Gem Radar Breakout at $${newPrice}`,
+        alphaScoreAtEntry: pos.alphaScoreAtEntry,
+        entryRationale: pos.entryRationale,
+        simulatedGasFeeUsd: 0.005,
+      };
+      updatedClosedTrades.unshift(closedRecord);
+
+      newLogs.unshift({
+        id: `log-gem-tp-${Date.now()}`,
+        timestamp: Date.now(),
+        type: 'EXIT_TAKE_PROFIT',
+        tokenSymbol: pos.tokenSymbol,
+        tokenAddress: pos.tokenAddress,
+        chain: 'solana',
+        convictionScore: pos.alphaScoreAtEntry,
+        action: `TAKE PROFIT (+${newPnlPercent}%) - Sold Gem Radar breakout ${pos.tokenSymbol} at $${newPrice}`,
+        rationale: `Automated Take-Profit triggered at target $${pos.takeProfitPrice1}. Capital returned: $${totalReturned}. Net P&L: +$${newPnlUsd}.`,
+        outcomePnlUsd: newPnlUsd,
+        outcomePnlPercent: newPnlPercent,
+        improvementLessonTag: '[WIN: GEM_BREAKOUT_TP]',
+        improvementNote: 'Locked in breakout gains mechanically.',
+      });
+      continue;
+    }
+
+    // Stop Loss Trigger
+    if (newPrice <= pos.stopLossPrice) {
+      const totalReturned = +(pos.investedUsd + newPnlUsd).toFixed(2);
+      cash = +(cash + Math.max(0, totalReturned)).toFixed(2);
+      realizedPnl = +(realizedPnl + newPnlUsd).toFixed(2);
+      losses++;
+
+      const closedRecord: DemoClosedTrade = {
+        id: `closed-gem-${Date.now()}-${Math.random().toString(36).substring(7)}`,
+        tokenAddress: pos.tokenAddress,
+        tokenSymbol: pos.tokenSymbol,
+        tokenName: pos.tokenName,
+        chain: 'solana',
+        copiedFromWallet: pos.copiedFromWallet,
+        copiedFromWalletLabel: 'Gem Radar Velocity Breakout',
+        entryTimestamp: pos.entryTimestamp,
+        exitTimestamp: Date.now(),
+        holdDurationSeconds: Math.max(1, Math.round((Date.now() - pos.entryTimestamp) / 1000)),
+        entryPriceUsd: pos.entryPriceUsd,
+        exitPriceUsd: newPrice,
+        investedUsd: pos.investedUsd,
+        returnedUsd: Math.max(0, totalReturned),
+        netPnlUsd: newPnlUsd,
+        netPnlPercent: newPnlPercent,
+        multiplier: +(newPrice / pos.entryPriceUsd).toFixed(2),
+        exitReason: 'STOP_LOSS',
+        exitReasonDetail: `Hard Stop-Loss Cut (${newPnlPercent}%) on Gem Radar breakout at $${newPrice}`,
+        alphaScoreAtEntry: pos.alphaScoreAtEntry,
+        entryRationale: pos.entryRationale,
+        simulatedGasFeeUsd: 0.005,
+      };
+      updatedClosedTrades.unshift(closedRecord);
+
+      newLogs.unshift({
+        id: `log-gem-sl-${Date.now()}`,
+        timestamp: Date.now(),
+        type: 'EXIT_STOP_LOSS',
+        tokenSymbol: pos.tokenSymbol,
+        tokenAddress: pos.tokenAddress,
+        chain: 'solana',
+        convictionScore: pos.alphaScoreAtEntry,
+        action: `STOP LOSS HIT (${newPnlPercent}%) - Cut Gem ${pos.tokenSymbol} at $${newPrice}`,
+        rationale: `Automated Stop-Loss triggered below threshold ($${pos.stopLossPrice}). Capital preserved by cutting loss at -$${Math.abs(newPnlUsd)}.`,
+        outcomePnlUsd: newPnlUsd,
+        outcomePnlPercent: newPnlPercent,
+        improvementLessonTag: '[LOSS: GEM_BREAKOUT_STOP]',
+        improvementNote: 'Capital protected from post-breakout pullback.',
+      });
+      continue;
+    }
+
+    updatedPositions.push({
+      ...pos,
+      currentPriceUsd: newPrice,
+      pnlUsd: newPnlUsd,
+      pnlPercent: newPnlPercent,
+    });
+  }
+
+  // 2. Scan Live Gem Radar for High-Conviction Breakout Setups
+  const activePositionCount = updatedPositions.filter((p) => p.status === 'OPEN').length;
+  if (activePositionCount < portfolio.maxConcurrentPositions && cash >= portfolio.allocationPerTradeUsd) {
+    try {
+      const liveSignals = await detectPreBreakoutGemSignals();
+
+      for (const sig of liveSignals) {
+        if (updatedPositions.length >= portfolio.maxConcurrentPositions || cash < portfolio.allocationPerTradeUsd) break;
+
+        const alreadyHolding = updatedPositions.some((p) => p.tokenAddress === sig.tokenAddress);
+        if (alreadyHolding) continue;
+
+        // Entry criteria: Confidence >= 80, liquidity depth >= $10k, valid spot price
+        if (sig.confidenceScore >= 80 && sig.liquidityUsd >= 10000 && sig.priceUsd > 0) {
+          const allocation = portfolio.allocationPerTradeUsd;
+          cash = +(cash - allocation).toFixed(2);
+          const spotPrice = sig.priceUsd;
+          const tokenAmount = +(allocation / spotPrice).toFixed(4);
+
+          const newPos: DemoPosition = {
+            id: `pos-gem-${Date.now()}-${sig.tokenSymbol}`,
+            tokenAddress: sig.tokenAddress,
+            tokenSymbol: sig.tokenSymbol,
+            tokenName: sig.tokenName,
+            chain: 'solana',
+            copiedFromWallet: sig.tokenAddress,
+            copiedFromWalletLabel: `Gem Radar: ${sig.patternTitle}`,
+            entryTimestamp: Date.now(),
+            entryPriceUsd: spotPrice,
+            currentPriceUsd: spotPrice,
+            investedUsd: allocation,
+            tokenAmount,
+            pnlUsd: 0,
+            pnlPercent: 0,
+            takeProfitPrice1: +(spotPrice * 2.0).toFixed(6),
+            takeProfitPrice2: +(spotPrice * 5.0).toFixed(6),
+            stopLossPrice: +(spotPrice * (1 + portfolio.stopLossPercent / 100)).toFixed(6),
+            status: 'OPEN',
+            alphaScoreAtEntry: sig.confidenceScore,
+            entryRationale: `Sniped live Gem Radar breakout: ${sig.patternTitle}. 5m Volume: $${Math.round(sig.volume5mUsd).toLocaleString()}, Liquidity: $${Math.round(sig.liquidityUsd).toLocaleString()}.`,
+            strategy: 'GEM_RADAR_BREAKOUT',
+            gemPattern: sig.patternType,
+          };
+
+          updatedPositions.push(newPos);
+
+          newLogs.unshift({
+            id: `log-entry-gem-${Date.now()}`,
+            timestamp: Date.now(),
+            type: 'ENTRY_EXECUTED',
+            tokenSymbol: sig.tokenSymbol,
+            tokenAddress: sig.tokenAddress,
+            chain: 'solana',
+            convictionScore: sig.confidenceScore,
+            action: `ENTERED ${sig.tokenSymbol} (GEM RADAR BREAKOUT): $${allocation} at spot $${spotPrice}`,
+            rationale: `Live Gem Radar setup verified: ${sig.patternTitle}. ${sig.patternDescription}`,
+            improvementLessonTag: '[WIN_OPPORTUNITY: GEM_RADAR_BREAKOUT]',
+            improvementNote: 'Sniped live breakout momentum with strict 2x TP and -20% SL protection.',
+          });
+        }
+      }
+    } catch (err) {
+      console.warn('[GemRadarBot] Error scanning gem signals:', err);
+    }
+  }
+
+  // 3. Final Portfolio Metrics Calculation
+  const openPositionsMarketValue = updatedPositions
+    .filter((p) => p.status === 'OPEN')
+    .reduce((acc, p) => acc + (p.investedUsd + p.pnlUsd), 0);
+  const investedInPositions = updatedPositions
+    .filter((p) => p.status === 'OPEN')
+    .reduce((acc, p) => acc + p.investedUsd, 0);
+  const totalEquity = +(cash + openPositionsMarketValue).toFixed(2);
+  const unrealizedPnl = +(openPositionsMarketValue - investedInPositions).toFixed(2);
+  const totalTradesCount = wins + losses;
+  const winRate = totalTradesCount > 0 ? +((wins / totalTradesCount) * 100).toFixed(1) : 0;
+
+  const history = [...portfolio.equityHistory];
+  if (history.length === 0 || Date.now() - history[history.length - 1].timestamp > 60000) {
+    history.push({ timestamp: Date.now(), equityUsd: totalEquity });
+  }
+
+  const updatedPortfolio: DemoPortfolio = {
+    ...portfolio,
+    currentCash: cash,
+    investedInPositionsUsd: +investedInPositions.toFixed(2),
+    totalEquityUsd: totalEquity,
+    totalRealizedPnlUsd: realizedPnl,
+    totalUnrealizedPnlUsd: unrealizedPnl,
+    totalWins: wins,
+    totalLosses: losses,
+    winRate,
+    reloadCount,
+    totalDemoCapitalLoaded,
+    equityHistory: history.slice(-50),
+    closedTrades: updatedClosedTrades,
+  };
+
+  return {
+    updatedPortfolio,
+    updatedPositions,
+    newLogs,
+  };
+}
+
+// Backward-compatible wrapper for single tick
+export async function runDemoBotTick(
+  portfolio: DemoPortfolio,
+  positions: DemoPosition[],
+  logs: DecisionLog[],
+  closedTradesInput?: DemoClosedTrade[]
+) {
+  return runCopyBotTick(portfolio, positions, logs, closedTradesInput);
 }

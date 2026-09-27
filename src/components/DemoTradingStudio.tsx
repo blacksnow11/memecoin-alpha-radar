@@ -45,6 +45,10 @@ import {
 interface DemoTradingStudioProps {
   portfolio: DemoPortfolio;
   positions: DemoPosition[];
+  botMode?: 'copy' | 'gem_radar';
+  onSelectBotMode?: (mode: 'copy' | 'gem_radar') => void;
+  copyPortfolio?: DemoPortfolio;
+  gemPortfolio?: DemoPortfolio;
   onTick: () => void;
   onReload: () => void;
   onToggleBot: () => void;
@@ -83,6 +87,10 @@ function formatDateTime(timestamp: number): string {
 export function DemoTradingStudio({
   portfolio,
   positions,
+  botMode = 'copy',
+  onSelectBotMode,
+  copyPortfolio,
+  gemPortfolio,
   onTick,
   onReload,
   onToggleBot,
@@ -276,15 +284,74 @@ export function DemoTradingStudio({
 
   return (
     <div className="space-y-6">
+      {/* Dual Engine Switcher Tabs */}
+      <div className="flex flex-col sm:flex-row items-center bg-slate-900/90 p-2 rounded-2xl border border-cyber-border shadow-xl gap-2">
+        <button
+          onClick={() => onSelectBotMode && onSelectBotMode('copy')}
+          className={`flex-1 w-full py-3 px-4 rounded-xl text-xs font-semibold flex items-center justify-between transition-all ${
+            botMode !== 'gem_radar'
+              ? 'bg-purple-950/70 border border-purple-500/80 text-purple-100 shadow-lg shadow-purple-900/30'
+              : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40 border border-transparent'
+          }`}
+        >
+          <div className="flex items-center space-x-2.5">
+            <div className="w-7 h-7 rounded-lg bg-purple-500/20 border border-purple-500/40 flex items-center justify-center">
+              <Bot className="w-4 h-4 text-purple-400" />
+            </div>
+            <div className="text-left">
+              <div className="font-bold text-slate-100">Smart Money Copy Bot</div>
+              <div className="text-[10px] text-slate-400">Verified Solana Whales &bull; 15m Recency Guard &bull; On-Chain Holding Check</div>
+            </div>
+          </div>
+          {copyPortfolio && (
+            <div className="text-right">
+              <div className="text-xs font-mono font-bold text-purple-300">${copyPortfolio.totalEquityUsd.toFixed(2)}</div>
+              <div className="text-[10px] font-mono text-slate-400">Bankroll: $100</div>
+            </div>
+          )}
+        </button>
+
+        <button
+          onClick={() => onSelectBotMode && onSelectBotMode('gem_radar')}
+          className={`flex-1 w-full py-3 px-4 rounded-xl text-xs font-semibold flex items-center justify-between transition-all ${
+            botMode === 'gem_radar'
+              ? 'bg-amber-950/70 border border-amber-500/80 text-amber-100 shadow-lg shadow-amber-900/30'
+              : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40 border border-transparent'
+          }`}
+        >
+          <div className="flex items-center space-x-2.5">
+            <div className="w-7 h-7 rounded-lg bg-amber-500/20 border border-amber-500/40 flex items-center justify-center">
+              <Zap className="w-4 h-4 text-amber-400" />
+            </div>
+            <div className="text-left">
+              <div className="font-bold text-slate-100">Gem Radar Breakout Hunter</div>
+              <div className="text-[10px] text-slate-400">5-Min Volume Velocity &bull; Early Bonding Curves &bull; DexScreener Live</div>
+            </div>
+          </div>
+          {gemPortfolio && (
+            <div className="text-right">
+              <div className="text-xs font-mono font-bold text-amber-300">${gemPortfolio.totalEquityUsd.toFixed(2)}</div>
+              <div className="text-[10px] font-mono text-slate-400">Bankroll: $100</div>
+            </div>
+          )}
+        </button>
+      </div>
+
       {/* Top Banner: Status & Controls */}
       <div className="bg-gradient-to-r from-slate-900 via-cyber-card to-slate-900 p-6 rounded-2xl border border-cyber-border shadow-2xl flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
         <div className="space-y-1">
           <div className="flex items-center space-x-2.5">
-            <div className="w-8 h-8 rounded-lg bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center">
-              <Bot className="w-5 h-5 text-emerald-400" />
+            <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${
+              botMode === 'gem_radar' ? 'bg-amber-500/20 border border-amber-500/40' : 'bg-emerald-500/20 border border-emerald-500/40'
+            }`}>
+              {botMode === 'gem_radar' ? (
+                <Zap className="w-5 h-5 text-amber-400" />
+              ) : (
+                <Bot className="w-5 h-5 text-emerald-400" />
+              )}
             </div>
             <h2 className="text-xl font-bold text-white tracking-wide">
-              Autonomous $100 Demo Trading Bot
+              {botMode === 'gem_radar' ? 'Gem Radar Breakout Hunter ($100 Bankroll)' : 'Smart Money Copy-Trade Bot ($100 Bankroll)'}
             </h2>
             <span
               className={`px-2.5 py-0.5 rounded-full text-xs font-mono font-bold flex items-center space-x-1.5 ${
@@ -309,9 +376,20 @@ export function DemoTradingStudio({
             <span className="px-2.5 py-0.5 rounded-full text-[11px] font-mono text-slate-400 bg-slate-900 border border-slate-700/60">
               Avg Solana Gas: $0.005
             </span>
+            {botMode === 'gem_radar' ? (
+              <span className="px-2.5 py-0.5 rounded-full text-[11px] font-mono text-amber-300 bg-amber-950/80 border border-amber-500/50">
+                Strategy: Velocity Breakout Sniper
+              </span>
+            ) : (
+              <span className="px-2.5 py-0.5 rounded-full text-[11px] font-mono text-purple-300 bg-purple-950/80 border border-purple-500/50">
+                Strategy: Verified Whale Follower
+              </span>
+            )}
           </div>
           <p className="text-xs text-slate-400 pt-0.5">
-            Monitors live Solana smart money trades (Pump.fun &amp; Raydium) and executes entries against live on-chain spot prices when conviction &ge; {portfolio.minConvictionThreshold}%.
+            {botMode === 'gem_radar'
+              ? `Auto-buys and sells high-probability early breakout gems surfaced by the Gem Radar when 5m volume velocity spikes and liquidity is locked.`
+              : `Monitors tracked Solana smart money trades on Helius and only executes entries when whale holding is confirmed and conviction \u2265 ${portfolio.minConvictionThreshold}%.`}
           </p>
         </div>
 

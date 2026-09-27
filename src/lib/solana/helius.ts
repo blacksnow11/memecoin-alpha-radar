@@ -72,6 +72,55 @@ export async function fetchLivePumpFunSwaps(limit = 10): Promise<OnChainSwap[]> 
   }
 }
 
+export async function checkWalletTokenHolding(
+  walletAddress: string,
+  tokenMint: string
+): Promise<{ isHolding: boolean; tokenBalance: number }> {
+  try {
+    const res = await fetch(HELIUS_RPC_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'getTokenAccountsByOwner',
+        params: [
+          walletAddress,
+          { mint: tokenMint },
+          { encoding: 'jsonParsed' }
+        ],
+      }),
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+      const accounts = data.result?.value;
+      if (Array.isArray(accounts) && accounts.length > 0) {
+        const tokenAmount = accounts[0]?.account?.data?.parsed?.info?.tokenAmount;
+        const uiAmount = tokenAmount?.uiAmount || 0;
+        return {
+          isHolding: uiAmount > 0,
+          tokenBalance: uiAmount,
+        };
+      }
+    }
+  } catch (err) {
+    console.warn(`[Helius] checkWalletTokenHolding error for ${walletAddress}:`, err);
+  }
+  return { isHolding: false, tokenBalance: 0 };
+}
+
+export async function discoverActiveTraders(limit = 20): Promise<string[]> {
+  try {
+    const swaps = await fetchLivePumpFunSwaps(limit);
+    const uniqueWallets = Array.from(new Set(swaps.map((s) => s.walletAddress).filter(Boolean)));
+    return uniqueWallets;
+  } catch (err) {
+    console.error('[Helius] discoverActiveTraders error:', err);
+    return [];
+  }
+}
+
 export async function fetchSolanaAccountBalance(walletAddress: string): Promise<number> {
   try {
     const res = await fetch(HELIUS_RPC_URL, {
@@ -97,13 +146,20 @@ export async function fetchSolanaAccountBalance(walletAddress: string): Promise<
   return 0;
 }
 
+const STABLE_MINTS = new Set([
+  WSOL_MINT,
+  'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
+  'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', // USDT
+  'Xsc9qvGR1efVDFGLrVsmkzv3qi45LTBjeUKSPmx9qEh', // Pump fee token
+]);
+
 function parseHeliusSwap(tx: any, targetWallet?: string): OnChainSwap | null {
   try {
     const tokenTransfers = tx.tokenTransfers || [];
     const nativeTransfers = tx.nativeTransfers || [];
 
-    // Find non-SOL token transfer
-    const memeTransfer = tokenTransfers.find((t: any) => t.mint && t.mint !== WSOL_MINT);
+    // Find non-SOL non-stablecoin token transfer
+    const memeTransfer = tokenTransfers.find((t: any) => t.mint && !STABLE_MINTS.has(t.mint));
     if (!memeTransfer) return null;
 
     const tokenAddress = memeTransfer.mint;
@@ -113,16 +169,27 @@ function parseHeliusSwap(tx: any, targetWallet?: string): OnChainSwap | null {
     const solTransfer = tokenTransfers.find((t: any) => t.mint === WSOL_MINT);
     let solAmount = solTransfer ? Math.abs(solTransfer.tokenAmount || 0) : 0;
 
+    const feePayer = tx.feePayer || targetWallet || 'unknown';
+
     if (solAmount === 0 && nativeTransfers.length > 0) {
-      solAmount = +(
-        nativeTransfers.reduce((acc: number, nt: any) => acc + (nt.amount || 0), 0) / 1e9
-      ).toFixed(4);
+      const payerNative = nativeTransfers.filter(
+        (nt: any) => nt.fromUserAccount === feePayer || nt.toUserAccount === feePayer
+      );
+      if (payerNative.length > 0) {
+        solAmount = +(
+          payerNative.reduce((acc: number, nt: any) => acc + (nt.amount || 0), 0) / 1e9
+        ).toFixed(4);
+      } else {
+        solAmount = +(
+          nativeTransfers.reduce((acc: number, nt: any) => acc + (nt.amount || 0), 0) / 1e9
+        ).toFixed(4);
+      }
     }
 
-    const feePayer = tx.feePayer || targetWallet || 'unknown';
+    if (solAmount === 0) solAmount = 0.05; // Fallback minimum swap size
+
     const isBuy = memeTransfer.toUserAccount === feePayer;
     const action: 'BUY' | 'SELL' = isBuy ? 'BUY' : 'SELL';
-
     const priceSol = tokenAmount > 0 && solAmount > 0 ? +(solAmount / tokenAmount).toFixed(8) : undefined;
 
     return {

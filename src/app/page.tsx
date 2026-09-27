@@ -4,19 +4,19 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { Header } from '@/components/Header';
 import { LeaderboardTable } from '@/components/LeaderboardTable';
 import { WalletDossierModal } from '@/components/WalletDossierModal';
-import { DemoTradingStudio } from '@/components/DemoTradingStudio';
-import { RecordedLogsViewer } from '@/components/RecordedLogsViewer';
 import { WalletInspectorModal } from '@/components/WalletInspectorModal';
 import { BotExporterModal } from '@/components/BotExporterModal';
+import { DemoTradingStudio } from '@/components/DemoTradingStudio';
+import { RecordedLogsViewer } from '@/components/RecordedLogsViewer';
+import { ChainId, DecisionLog, DemoPortfolio, DemoPosition, WalletProfile } from '@/lib/types';
 import {
-  ChainId,
-  DecisionLog,
-  DemoPortfolio,
-  DemoPosition,
-  WalletProfile,
-} from '@/lib/types';
-import { DEFAULT_DEMO_PORTFOLIO, INITIAL_DECISION_LOGS, INITIAL_OPEN_POSITIONS } from '@/lib/demo-trading-engine';
-import { SEED_WALLETS, getRankedWallets } from '@/lib/wallet-engine';
+  DEFAULT_DEMO_PORTFOLIO,
+  DEFAULT_GEM_RADAR_PORTFOLIO,
+  INITIAL_DECISION_LOGS,
+  INITIAL_GEM_RADAR_LOGS,
+  INITIAL_OPEN_POSITIONS,
+} from '@/lib/demo-trading-engine';
+import { getRankedWallets } from '@/lib/wallet-engine';
 import { GemRadarWidget } from '@/components/GemRadarWidget';
 import { Bot, CheckCircle, Zap, Radar } from 'lucide-react';
 
@@ -39,31 +39,69 @@ export default function Home() {
   // Toast notification
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
-  // Demo Trading Engine State
-  const [portfolio, setPortfolio] = useState<DemoPortfolio>(DEFAULT_DEMO_PORTFOLIO);
-  const [positions, setPositions] = useState<DemoPosition[]>(INITIAL_OPEN_POSITIONS);
-  const [logs, setLogs] = useState<DecisionLog[]>(INITIAL_DECISION_LOGS);
+  // Dual-Engine Trading State
+  const [botMode, setBotMode] = useState<'copy' | 'gem_radar'>('copy');
+
+  // 1. Smart Money Copy Bot ($100 Bankroll)
+  const [copyPortfolio, setCopyPortfolio] = useState<DemoPortfolio>(DEFAULT_DEMO_PORTFOLIO);
+  const [copyPositions, setCopyPositions] = useState<DemoPosition[]>(INITIAL_OPEN_POSITIONS);
+  const [copyLogs, setCopyLogs] = useState<DecisionLog[]>(INITIAL_DECISION_LOGS);
+
+  // 2. Gem Radar Breakout Hunter ($100 Bankroll)
+  const [gemPortfolio, setGemPortfolio] = useState<DemoPortfolio>(DEFAULT_GEM_RADAR_PORTFOLIO);
+  const [gemPositions, setGemPositions] = useState<DemoPosition[]>([]);
+  const [gemLogs, setGemLogs] = useState<DecisionLog[]>(INITIAL_GEM_RADAR_LOGS);
+
+  const activePortfolio = botMode === 'gem_radar' ? gemPortfolio : copyPortfolio;
+  const activePositions = botMode === 'gem_radar' ? gemPositions : copyPositions;
+  const activeLogs = botMode === 'gem_radar' ? gemLogs : copyLogs;
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), 3500);
   };
 
-  // Fetch / update ranked wallets when filters change
+  // Fetch / update ranked wallets when filters change via live Helius API
   useEffect(() => {
-    const updated = getRankedWallets(selectedChain, timeframe, sortBy);
-    setWallets(updated);
+    let isMounted = true;
+    async function loadLeaderboard() {
+      try {
+        const res = await fetch(`/api/leaderboard?chain=${selectedChain}&timeframe=${timeframe}&sortBy=${sortBy}`);
+        const data = await res.json();
+        if (isMounted && data.success && Array.isArray(data.wallets)) {
+          setWallets(data.wallets);
+        }
+      } catch (err) {
+        if (isMounted) setWallets(getRankedWallets(selectedChain, timeframe, sortBy));
+      }
+    }
+    loadLeaderboard();
+    return () => {
+      isMounted = false;
+    };
   }, [selectedChain, timeframe, sortBy]);
 
-  // Fetch demo state
+  // Fetch demo state for both engines
   const loadDemoState = useCallback(async () => {
     try {
       const res = await fetch('/api/demo-bot');
       const data = await res.json();
       if (data.success) {
-        if (data.portfolio) setPortfolio(data.portfolio);
-        if (data.positions) setPositions(data.positions);
-        if (data.logs) setLogs(data.logs);
+        if (data.copyBot) {
+          setCopyPortfolio(data.copyBot.portfolio);
+          setCopyPositions(data.copyBot.positions || []);
+          setCopyLogs(data.copyBot.logs || []);
+        } else if (data.portfolio) {
+          setCopyPortfolio(data.portfolio);
+          setCopyPositions(data.positions || []);
+          setCopyLogs(data.logs || []);
+        }
+
+        if (data.gemRadarBot) {
+          setGemPortfolio(data.gemRadarBot.portfolio);
+          setGemPositions(data.gemRadarBot.positions || []);
+          setGemLogs(data.gemRadarBot.logs || []);
+        }
       }
     } catch (err) {
       console.error('Failed to load demo bot state:', err);
@@ -84,26 +122,33 @@ export default function Home() {
       });
       const data = await res.json();
       if (data.success) {
-        setPortfolio(data.portfolio);
-        setPositions(data.positions);
-        setLogs(data.logs);
+        if (data.copyBot) {
+          setCopyPortfolio(data.copyBot.portfolio);
+          setCopyPositions(data.copyBot.positions || []);
+          setCopyLogs(data.copyBot.logs || []);
+        }
+        if (data.gemRadarBot) {
+          setGemPortfolio(data.gemRadarBot.portfolio);
+          setGemPositions(data.gemRadarBot.positions || []);
+          setGemLogs(data.gemRadarBot.logs || []);
+        }
       }
     } catch (err) {
       console.error('Tick error:', err);
     }
   }, []);
 
-  // Periodic autonomous runner: runs while bot is active
+  // Periodic autonomous runner: runs while either bot is active
   useEffect(() => {
-    if (!portfolio.isBotRunning) return;
+    if (!copyPortfolio.isBotRunning && !gemPortfolio.isBotRunning) return;
 
-    // Run tick every 7 seconds
+    // Run tick every 8 seconds
     const interval = setInterval(() => {
       handleTick();
-    }, 7000);
+    }, 8000);
 
     return () => clearInterval(interval);
-  }, [portfolio.isBotRunning, handleTick]);
+  }, [copyPortfolio.isBotRunning, gemPortfolio.isBotRunning, handleTick]);
 
   // Handle reload $100
   const handleReload = async () => {
@@ -111,14 +156,21 @@ export default function Home() {
       const res = await fetch('/api/demo-bot', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'reload' }),
+        body: JSON.stringify({ action: 'reload', botType: botMode }),
       });
       const data = await res.json();
       if (data.success) {
-        setPortfolio(data.portfolio);
-        setPositions(data.positions);
-        setLogs(data.logs);
-        showToast('Successfully reloaded $100.00 into Demo Bankroll!');
+        if (data.copyBot) {
+          setCopyPortfolio(data.copyBot.portfolio);
+          setCopyPositions(data.copyBot.positions || []);
+          setCopyLogs(data.copyBot.logs || []);
+        }
+        if (data.gemRadarBot) {
+          setGemPortfolio(data.gemRadarBot.portfolio);
+          setGemPositions(data.gemRadarBot.positions || []);
+          setGemLogs(data.gemRadarBot.logs || []);
+        }
+        showToast(`Successfully reloaded $100.00 into ${botMode === 'gem_radar' ? 'Gem Radar' : 'Copy'} Bot!`);
       }
     } catch (err) {
       console.error('Reload error:', err);
@@ -131,15 +183,19 @@ export default function Home() {
       const res = await fetch('/api/demo-bot', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'toggle_bot' }),
+        body: JSON.stringify({ action: 'toggle_bot', botType: botMode }),
       });
       const data = await res.json();
       if (data.success) {
-        setPortfolio((prev) => ({ ...prev, isBotRunning: data.isBotRunning }));
+        if (botMode === 'gem_radar') {
+          setGemPortfolio((prev) => ({ ...prev, isBotRunning: data.isBotRunning }));
+        } else {
+          setCopyPortfolio((prev) => ({ ...prev, isBotRunning: data.isBotRunning }));
+        }
         showToast(
           data.isBotRunning
-            ? 'Autonomous Bot Activated: Scanning trades for high conviction entries.'
-            : 'Autonomous Bot Paused.'
+            ? `${botMode === 'gem_radar' ? 'Gem Radar Hunter' : 'Smart Money Copy Bot'} Activated: Scanning live on-chain data.`
+            : `${botMode === 'gem_radar' ? 'Gem Radar Hunter' : 'Smart Money Copy Bot'} Paused.`
         );
       }
     } catch (err) {
@@ -157,48 +213,62 @@ export default function Home() {
       });
       const data = await res.json();
       if (data.success) {
-        setPortfolio(data.portfolio);
-        setPositions(data.positions);
-        setLogs(data.logs);
-        showToast('Position closed. Capital returned to available cash.');
+        if (data.copyBot) {
+          setCopyPortfolio(data.copyBot.portfolio);
+          setCopyPositions(data.copyBot.positions || []);
+          setCopyLogs(data.copyBot.logs || []);
+        }
+        if (data.gemRadarBot) {
+          setGemPortfolio(data.gemRadarBot.portfolio);
+          setGemPositions(data.gemRadarBot.positions || []);
+          setGemLogs(data.gemRadarBot.logs || []);
+        }
+        showToast('Position closed manually. Capital returned to balance.');
       }
     } catch (err) {
-      console.error('Close error:', err);
+      console.error('Close position error:', err);
     }
   };
 
-  // Update strategy config
-  const handleUpdateConfig = async (config: Partial<DemoPortfolio>) => {
+  // Update bot risk configuration
+  const handleUpdateConfig = async (newConfig: Partial<DemoPortfolio>) => {
     try {
       const res = await fetch('/api/demo-bot', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'update_config', ...config }),
+        body: JSON.stringify({
+          action: 'update_config',
+          botType: botMode,
+          ...newConfig,
+        }),
       });
       const data = await res.json();
-      if (data.success) {
-        setPortfolio(data.portfolio);
-        showToast('Strategy rules updated successfully!');
+      if (data.success && data.portfolio) {
+        if (botMode === 'gem_radar') {
+          setGemPortfolio((prev) => ({ ...prev, ...data.portfolio }));
+        } else {
+          setCopyPortfolio((prev) => ({ ...prev, ...data.portfolio }));
+        }
+        showToast('Risk & Conviction parameters updated successfully.');
       }
     } catch (err) {
-      console.error('Config error:', err);
+      console.error('Config update error:', err);
     }
   };
 
-  // Quick copy from leaderboard
+  // Quick Copy Action from Leaderboard
   const handleQuickCopy = (wallet: WalletProfile) => {
-    showToast(`Added ${wallet.label} to autonomous copy watchlist!`);
     setActiveTab('demo');
-    // Trigger immediate tick to evaluate this wallet
-    handleTick();
+    setBotMode('copy');
+    showToast(`Smart Money Copy Bot configured to prioritize trades from ${wallet.label}.`);
   };
 
   return (
-    <main className="min-h-screen bg-cyber-bg flex flex-col">
-      {/* Toast Notification */}
+    <main className="min-h-screen bg-cyber-bg text-slate-100 flex flex-col font-sans selection:bg-cyber-accent selection:text-slate-950">
+      {/* Toast Alert */}
       {toastMessage && (
-        <div className="fixed bottom-6 right-6 z-50 bg-slate-900 border border-emerald-500/50 text-white px-4 py-3 rounded-xl shadow-2xl flex items-center space-x-2 text-xs font-medium animate-bounce">
-          <CheckCircle className="w-4 h-4 text-emerald-400" />
+        <div className="fixed bottom-6 right-6 z-50 bg-emerald-500 text-slate-950 px-4 py-3 rounded-xl font-medium shadow-2xl flex items-center space-x-2 animate-bounce">
+          <CheckCircle className="w-5 h-5" />
           <span>{toastMessage}</span>
         </div>
       )}
@@ -209,46 +279,40 @@ export default function Home() {
         setActiveTab={setActiveTab}
         selectedChain={selectedChain}
         setSelectedChain={setSelectedChain}
-        demoBalance={portfolio.totalEquityUsd}
-        demoPnl={portfolio.totalRealizedPnlUsd}
-        demoWins={portfolio.totalWins}
-        demoLosses={portfolio.totalLosses}
+        demoBalance={activePortfolio.totalEquityUsd}
+        demoPnl={activePortfolio.totalRealizedPnlUsd}
+        demoWins={activePortfolio.totalWins}
+        demoLosses={activePortfolio.totalLosses}
         onOpenInspector={() => setIsInspectorOpen(true)}
         onOpenBotExport={() => setIsBotExportOpen(true)}
       />
 
-      {/* Body Content */}
-      <div className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
+      {/* Main Body */}
+      <div className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">
         {activeTab === 'leaderboard' && (
           <div className="space-y-6">
-            {/* Quick Hero Banner */}
-            <div className="bg-gradient-to-r from-cyber-card via-slate-900 to-cyber-card p-6 rounded-2xl border border-cyber-border flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
-              <div>
-                <h1 className="text-xl sm:text-2xl font-black text-white tracking-tight flex items-center space-x-2">
-                  <span>Smart-Money Memecoin Leaderboard</span>
-                  <span className="text-xs font-mono font-bold px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
-                    Live Verified
-                  </span>
-                </h1>
-                <p className="text-xs text-slate-400 mt-1 max-w-2xl leading-relaxed">
-                  Every wallet is audited and ranked by <strong className="text-cyber-accent">Capital Efficiency (ROI)</strong>, <strong className="text-emerald-400">Win Rate</strong>, and <strong className="text-purple-400">Recency Velocity</strong>. Dormant wallets decay automatically so hot snipers rise to the top.
-                </p>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div className="flex items-center space-x-2">
+                <span className="px-3 py-1 rounded-full text-xs font-mono font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                  Solana Mainnet
+                </span>
+                <span className="text-xs text-slate-400">
+                  Ranked by ROI Capital Efficiency &bull; Live Helius On-Chain Data
+                </span>
               </div>
-
-              <div className="flex items-center space-x-3 shrink-0">
+              <div className="flex items-center space-x-3">
                 <button
-                  onClick={() => setActiveTab('radar')}
-                  className="px-4 py-2 rounded-xl text-xs font-bold bg-gradient-to-r from-purple-600 to-cyber-accent text-slate-950 hover:from-purple-500 hover:to-cyan-400 shadow-lg shadow-purple-500/20 flex items-center space-x-1.5 transition-all"
+                  onClick={() => setIsInspectorOpen(true)}
+                  className="px-4 py-2 rounded-xl text-xs font-semibold bg-cyber-card border border-cyber-border hover:border-slate-500 text-slate-300 hover:text-white transition-all flex items-center space-x-2"
                 >
-                  <Radar className="w-4 h-4" />
-                  <span>Gem Radar Feed</span>
+                  <span>🔍 Inspect Any Solana Wallet</span>
                 </button>
                 <button
                   onClick={() => setActiveTab('demo')}
-                  className="px-4 py-2 rounded-xl text-xs font-bold bg-emerald-500 text-slate-950 hover:bg-emerald-400 shadow-lg shadow-emerald-500/20 flex items-center space-x-1.5 transition-all"
+                  className="px-4 py-2 rounded-xl text-xs font-semibold bg-purple-600/20 border border-purple-500/40 hover:bg-purple-600/30 text-purple-300 transition-all flex items-center space-x-2 shadow-lg shadow-purple-600/10"
                 >
                   <Bot className="w-4 h-4" />
-                  <span>Open $100 Demo Bot</span>
+                  <span>Dual Demo Studio ($200)</span>
                 </button>
               </div>
             </div>
@@ -289,8 +353,12 @@ export default function Home() {
 
         {activeTab === 'demo' && (
           <DemoTradingStudio
-            portfolio={portfolio}
-            positions={positions}
+            portfolio={activePortfolio}
+            positions={activePositions}
+            botMode={botMode}
+            onSelectBotMode={setBotMode}
+            copyPortfolio={copyPortfolio}
+            gemPortfolio={gemPortfolio}
             onTick={handleTick}
             onReload={handleReload}
             onToggleBot={handleToggleBot}
@@ -300,13 +368,13 @@ export default function Home() {
           />
         )}
 
-        {activeTab === 'logs' && <RecordedLogsViewer logs={logs} />}
+        {activeTab === 'logs' && <RecordedLogsViewer logs={activeLogs} />}
       </div>
 
       {/* Footer */}
       <footer className="border-t border-cyber-border/60 bg-cyber-card/60 py-6 text-center text-xs text-slate-500">
         <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
-          <span>MemeAlpha Radar • Solana Memecoin Inspector & Autonomous Copy Engine</span>
+          <span>MemeAlpha Radar • Solana Memecoin Inspector & Dual-Engine Autonomous Trading</span>
           <span className="font-mono">Vercel Ready • Solana Mainnet • 100% Real Live On-Chain Data</span>
         </div>
       </footer>

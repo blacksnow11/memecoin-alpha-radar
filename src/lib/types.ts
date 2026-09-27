@@ -147,6 +147,10 @@ export interface DemoPosition {
   exitReason?: string;
   alphaScoreAtEntry: number;
   entryRationale: string;
+  strategy?: 'WHALE_COPY' | 'GEM_RADAR_BREAKOUT';
+  gemPattern?: string;
+  verifiedWhaleHolding?: boolean;
+  whaleEntryTimestamp?: number;
 }
 
 export interface DemoClosedTrade {
@@ -235,6 +239,21 @@ export interface DecisionLog {
   outcomePnlPercent?: number;
   improvementLessonTag: string; // e.g. "[WIN: SNIPER_CONSENSUS]", "[LOSS: SLIPPAGE_FADE]"
   improvementNote: string;
+}
+
+export type BotStrategyMode = 'COPY_TRADER' | 'GEM_RADAR_HUNTER';
+
+export interface DualBotState {
+  copyBot: {
+    portfolio: DemoPortfolio;
+    positions: DemoPosition[];
+    logs: DecisionLog[];
+  };
+  gemRadarBot: {
+    portfolio: DemoPortfolio;
+    positions: DemoPosition[];
+    logs: DecisionLog[];
+  };
 }
 
 export interface SmartWalletDetectorEvidence {
