@@ -1,0 +1,27 @@
+name: 24/7 Autonomous Bot Cloud Runner
+
+on:
+  schedule:
+    # Runs every 5 minutes around the clock
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+jobs:
+  run-autonomous-tick:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Trigger Vercel Autonomous Evaluation Tick
+        env:
+          VERCEL_APP_URL: ${{ secrets.VERCEL_APP_URL }}
+        run: |
+          if [ -n "$VERCEL_APP_URL" ]; then
+            echo "📡 Pinging Vercel deployment: $VERCEL_APP_URL"
+            curl -s -X POST "$VERCEL_APP_URL/api/demo-bot" \
+              -H "Content-Type: application/json" \
+              -d '{"action": "tick"}' | jq .
+          else
+            echo "ℹ️ VERCEL_APP_URL secret not set. Skipping remote ping."
+          fi

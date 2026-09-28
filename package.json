@@ -9,6 +9,7 @@
     "start": "next start",
     "lint": "next lint",
     "test": "node scripts/verify-engine.js",
+    "daemon": "node scripts/run-bot-daemon.js",
     "postinstall": "node scripts/patch-swc.js"
   },
   "dependencies": {
