@@ -17,6 +17,7 @@ FROM base AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
+RUN mkdir -p /app/public
 
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
@@ -33,10 +34,10 @@ ENV HOSTNAME="0.0.0.0"
 RUN addgroup --system --gid 1001 nodejs
 RUN adduser --system --uid 1001 nextjs
 
-# Ensure persistent data directory exists and is writable
-RUN mkdir -p /app/data && chown -R nextjs:nodejs /app/data
+# Ensure persistent data and public directories exist and are writable
+RUN mkdir -p /app/data /app/public && chown -R nextjs:nodejs /app/data /app/public
 
-COPY --from=builder /app/public ./public
+COPY --from=builder --chown=nextjs:nodejs /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next ./.next
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package.json ./package.json
