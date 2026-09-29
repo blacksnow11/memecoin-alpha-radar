@@ -8,6 +8,7 @@ const BIRDEYE_BASE_URL = 'https://public-api.birdeye.so';
 interface CachedPrice {
   priceUsd: number;
   priceChange24h: number;
+  liquidityUsd?: number;
   timestamp: number;
 }
 
@@ -17,7 +18,7 @@ const CACHE_TTL_MS = 15000; // 15 seconds
 
 export async function fetchSolanaTokenPrice(
   mintAddress: string
-): Promise<{ priceUsd: number; priceChange24h: number; source: 'birdeye' | 'dexscreener' | 'cache' }> {
+): Promise<{ priceUsd: number; priceChange24h: number; liquidityUsd?: number; source: 'birdeye' | 'dexscreener' | 'cache' }> {
   const now = Date.now();
 
   // 1. Check in-memory cache
@@ -25,6 +26,7 @@ export async function fetchSolanaTokenPrice(
     return {
       priceUsd: priceCache[mintAddress].priceUsd,
       priceChange24h: priceCache[mintAddress].priceChange24h,
+      liquidityUsd: priceCache[mintAddress].liquidityUsd,
       source: 'cache',
     };
   }
@@ -46,22 +48,24 @@ export async function fetchSolanaTokenPrice(
       if (data.success && data.data && typeof data.data.value === 'number') {
         const priceUsd = data.data.value;
         const priceChange24h = data.data.priceChange24h || 0;
+        const existingLiquidity = priceCache[mintAddress]?.liquidityUsd;
 
         // Save to cache
         priceCache[mintAddress] = {
           priceUsd,
           priceChange24h,
+          liquidityUsd: existingLiquidity,
           timestamp: now,
         };
 
-        return { priceUsd, priceChange24h, source: 'birdeye' };
+        return { priceUsd, priceChange24h, liquidityUsd: existingLiquidity, source: 'birdeye' };
       }
     }
   } catch (err) {
     console.warn(`[Birdeye] Fetch price failed for ${mintAddress}, falling back to DexScreener:`, err);
   }
 
-  // 3. Fallback to live DexScreener Solana endpoint if Birdeye rate limits
+  // 3. Fallback to live DexScreener Solana endpoint (provides real-time liquidityUsd)
   try {
     const dsRes = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${mintAddress}`);
     if (dsRes.ok) {
@@ -70,14 +74,16 @@ export async function fetchSolanaTokenPrice(
       if (solPair && solPair.priceUsd) {
         const priceUsd = parseFloat(solPair.priceUsd);
         const priceChange24h = solPair.priceChange?.h24 || 0;
+        const liquidityUsd = solPair.liquidity?.usd;
 
         priceCache[mintAddress] = {
           priceUsd,
           priceChange24h,
+          liquidityUsd,
           timestamp: now,
         };
 
-        return { priceUsd, priceChange24h, source: 'dexscreener' };
+        return { priceUsd, priceChange24h, liquidityUsd, source: 'dexscreener' };
       }
     }
   } catch (dsErr) {
@@ -86,7 +92,7 @@ export async function fetchSolanaTokenPrice(
 
   // Return last known cached price or 0
   const fallback = priceCache[mintAddress]?.priceUsd || 0;
-  return { priceUsd: fallback, priceChange24h: 0, source: 'cache' };
+  return { priceUsd: fallback, priceChange24h: 0, liquidityUsd: priceCache[mintAddress]?.liquidityUsd, source: 'cache' };
 }
 
 export async function fetchSolanaTokenOverview(mintAddress: string) {

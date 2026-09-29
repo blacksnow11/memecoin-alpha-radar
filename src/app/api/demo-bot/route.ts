@@ -8,7 +8,7 @@ import {
 } from '@/lib/demo-trading-engine';
 import { DecisionLog, DemoClosedTrade, DemoPosition } from '@/lib/types';
 import { fetchSolanaTokenPrice } from '@/lib/solana/birdeye';
-import { getBotState, updateBotState, StoredBotState } from '@/lib/bot-storage';
+import { getBotState, updateBotState, resetBotState, StoredBotState } from '@/lib/bot-storage';
 import { executeBotTick, getServerWorkerStatus, start247BotWorker } from '@/lib/bot-worker';
 
 export const dynamic = 'force-dynamic';
@@ -287,8 +287,8 @@ export async function POST(request: NextRequest) {
               tokenAmount,
               pnlUsd: 0,
               pnlPercent: 0,
-              takeProfitPrice1: +(spotPrice * 2.0).toFixed(6),
-              takeProfitPrice2: +(spotPrice * 5.0).toFixed(6),
+              takeProfitPrice1: +(spotPrice * 1.35).toFixed(6), // Calibrated TP1 (+35%)
+              takeProfitPrice2: +(spotPrice * 2.0).toFixed(6),  // Extended TP2 (+100%)
               stopLossPrice: +(spotPrice * (1 + prevState.gemRadarBot.portfolio.stopLossPercent / 100)).toFixed(6),
               status: 'OPEN',
               alphaScoreAtEntry: signal.confidenceScore,
@@ -302,6 +302,8 @@ export async function POST(request: NextRequest) {
               profitMilestonesReached: [],
               isBreakevenProtected: false,
               isTrailingActive: false,
+              entryLiquidityUsd: signal.liquidityUsd || 25000,
+              currentLiquidityUsd: signal.liquidityUsd || 25000,
             };
 
             prevState.gemRadarBot.positions.push(newPos);
@@ -341,23 +343,7 @@ export async function POST(request: NextRequest) {
 
     // 6. Reset both to pristine clean slates ($1,000 Starting Cash)
     if (action === 'reset') {
-      const resetState: StoredBotState = {
-        copyBot: {
-          portfolio: { ...DEFAULT_DEMO_PORTFOLIO, equityHistory: [{ timestamp: Date.now(), equityUsd: 1000 }] },
-          positions: [],
-          logs: [...INITIAL_DECISION_LOGS],
-        },
-        gemRadarBot: {
-          portfolio: { ...DEFAULT_GEM_RADAR_PORTFOLIO, equityHistory: [{ timestamp: Date.now(), equityUsd: 1000 }] },
-          positions: [],
-          logs: [...INITIAL_GEM_RADAR_LOGS],
-        },
-        lastServerTickTimestamp: Date.now(),
-        totalTicksExecuted: 0,
-        workerStartedAt: Date.now(),
-      };
-
-      const nextState = updateBotState(() => resetState);
+      const nextState = resetBotState();
 
       const allClosed = [
         ...(nextState.copyBot.portfolio.closedTrades || []),

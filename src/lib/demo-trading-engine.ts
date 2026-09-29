@@ -70,9 +70,9 @@ export const DEFAULT_DEMO_PORTFOLIO: DemoPortfolio = {
   maxConcurrentPositions: 25,
   stopLossPercent: -20,
   takeProfitTargets: [
-    { targetMultiplier: 2.0, sellPercent: 50 },
-    { targetMultiplier: 5.0, sellPercent: 30 },
-    { targetMultiplier: 10.0, sellPercent: 20 },
+    { targetMultiplier: 1.35, sellPercent: 40 },
+    { targetMultiplier: 2.0, sellPercent: 30 },
+    { targetMultiplier: 3.0, sellPercent: 30 },
   ],
   equityHistory: [
     { timestamp: Date.now(), equityUsd: 1000.00 },
@@ -100,9 +100,9 @@ export const DEFAULT_GEM_RADAR_PORTFOLIO: DemoPortfolio = {
   maxConcurrentPositions: 25,
   stopLossPercent: -20,
   takeProfitTargets: [
-    { targetMultiplier: 2.0, sellPercent: 50 },
-    { targetMultiplier: 5.0, sellPercent: 30 },
-    { targetMultiplier: 10.0, sellPercent: 20 },
+    { targetMultiplier: 1.35, sellPercent: 40 },
+    { targetMultiplier: 2.0, sellPercent: 30 },
+    { targetMultiplier: 3.0, sellPercent: 30 },
   ],
   equityHistory: [
     { timestamp: Date.now(), equityUsd: 1000.00 },
@@ -545,8 +545,16 @@ export async function runCopyBotTick(
 
     const livePriceData = await fetchSolanaTokenPrice(pos.tokenAddress);
     const newPrice = livePriceData.priceUsd > 0 ? livePriceData.priceUsd : pos.currentPriceUsd;
+    if (livePriceData.liquidityUsd) {
+      pos.currentLiquidityUsd = livePriceData.liquidityUsd;
+    }
+    if (!pos.entryLiquidityUsd && pos.currentLiquidityUsd) {
+      pos.entryLiquidityUsd = pos.currentLiquidityUsd;
+    }
     const newPnlUsd = +((newPrice - pos.entryPriceUsd) * pos.tokenAmount).toFixed(2);
     const newPnlPercent = +(((newPrice - pos.entryPriceUsd) / pos.entryPriceUsd) * 100).toFixed(1);
+    const holdDurationSeconds = Math.max(1, Math.round((Date.now() - pos.entryTimestamp) / 1000));
+    const holdDurationMinutes = holdDurationSeconds / 60;
 
     // Update Peak & Lowest MFE Metrics
     updatePositionPeakAndMilestones(pos, newPrice, newPnlPercent);
@@ -575,7 +583,141 @@ export async function runCopyBotTick(
       }
     }
 
-    // Trigger A: Full Take-Profit Target Hit (2.0x Double)
+    // Trigger CB: Circuit Breaker (Flash Rug / Liquidity Pull Detection)
+    const isLiqDrained = !!(pos.entryLiquidityUsd && pos.currentLiquidityUsd && pos.entryLiquidityUsd > 0 &&
+      ((pos.entryLiquidityUsd - pos.currentLiquidityUsd) / pos.entryLiquidityUsd >= 0.25));
+    const isLiqBelowFloor = !!(pos.currentLiquidityUsd !== undefined && pos.currentLiquidityUsd > 0 && pos.currentLiquidityUsd < 8000);
+    const isFlashCrash = newPnlPercent <= -50;
+
+    if (isLiqDrained || isLiqBelowFloor || isFlashCrash) {
+      const totalReturned = +(pos.investedUsd + newPnlUsd).toFixed(2);
+      cash = +(cash + Math.max(0, totalReturned)).toFixed(2);
+      realizedPnl = +(realizedPnl + newPnlUsd).toFixed(2);
+      losses++;
+
+      // Emergency 2-hour quarantine cooldown for rug/crash tokens
+      tokenStopLossCooldownMap.set(pos.tokenAddress, Date.now() + 2 * 3600 * 1000);
+
+      const drainPct = (pos.entryLiquidityUsd && pos.currentLiquidityUsd && pos.entryLiquidityUsd > 0)
+        ? Math.round(((pos.entryLiquidityUsd - pos.currentLiquidityUsd) / pos.entryLiquidityUsd) * 100)
+        : 0;
+
+      const reasonDetail = isLiqDrained
+        ? `Circuit Breaker: Pool liquidity drained by ${drainPct}% ($${Math.round(pos.entryLiquidityUsd || 0)} -> $${Math.round(pos.currentLiquidityUsd || 0)})`
+        : isLiqBelowFloor
+        ? `Circuit Breaker: Liquidity collapsed below $8,000 floor ($${Math.round(pos.currentLiquidityUsd || 0)})`
+        : `Circuit Breaker: Flash price crash (${newPnlPercent}%) detected`;
+
+      const closedRecord: DemoClosedTrade = {
+        id: `closed-copy-${Date.now()}-${Math.random().toString(36).substring(7)}`,
+        tokenAddress: pos.tokenAddress,
+        tokenSymbol: pos.tokenSymbol,
+        tokenName: pos.tokenName,
+        chain: 'solana',
+        copiedFromWallet: pos.copiedFromWallet,
+        copiedFromWalletLabel: pos.copiedFromWalletLabel,
+        entryTimestamp: pos.entryTimestamp,
+        exitTimestamp: Date.now(),
+        holdDurationSeconds,
+        entryPriceUsd: pos.entryPriceUsd,
+        exitPriceUsd: newPrice,
+        investedUsd: pos.investedUsd,
+        returnedUsd: Math.max(0, totalReturned),
+        netPnlUsd: newPnlUsd,
+        netPnlPercent: newPnlPercent,
+        multiplier: +(newPrice / pos.entryPriceUsd).toFixed(2),
+        exitReason: 'LIQUIDITY_RUG_PULL',
+        exitReasonDetail: reasonDetail,
+        peakPriceUsd: pos.peakPriceUsd ?? pos.entryPriceUsd,
+        peakPnlPercent: pos.peakPnlPercent ?? Math.max(0, newPnlPercent),
+        lowestPriceUsd: pos.lowestPriceUsd ?? pos.entryPriceUsd,
+        lowestPnlPercent: pos.lowestPnlPercent ?? Math.min(0, newPnlPercent),
+        profitMilestonesReached: pos.profitMilestonesReached || [],
+        alphaScoreAtEntry: pos.alphaScoreAtEntry,
+        entryRationale: pos.entryRationale,
+        simulatedGasFeeUsd: 0.005,
+      };
+      updatedClosedTrades.unshift(closedRecord);
+
+      newLogs.unshift({
+        id: `log-cb-${Date.now()}`,
+        timestamp: Date.now(),
+        type: 'EXIT_STOP_LOSS',
+        tokenSymbol: pos.tokenSymbol,
+        tokenAddress: pos.tokenAddress,
+        chain: 'solana',
+        triggeredByWallet: pos.copiedFromWallet,
+        triggeredByWalletLabel: pos.copiedFromWalletLabel,
+        convictionScore: 5,
+        action: `CIRCUIT BREAKER ACTIVATED: Emergency Exit on ${pos.tokenSymbol} at $${newPrice}`,
+        rationale: `${reasonDetail}. Emergency market exit executed to protect capital. Placed on 2-hour quarantine cooldown.`,
+        outcomePnlUsd: newPnlUsd,
+        outcomePnlPercent: newPnlPercent,
+        improvementLessonTag: '[CIRCUIT_BREAKER: RUG_DETECTED]',
+        improvementNote: 'Emergency liquidity/crash filter triggered to prevent total loss.',
+      });
+      continue;
+    }
+
+    // Trigger ST: Stagnation / Time-Decay Exit (90m elapsed with < 8% peak)
+    if (holdDurationMinutes >= 90 && (pos.peakPnlPercent ?? 0) < 8) {
+      const totalReturned = +(pos.investedUsd + newPnlUsd).toFixed(2);
+      cash = +(cash + Math.max(0, totalReturned)).toFixed(2);
+      realizedPnl = +(realizedPnl + newPnlUsd).toFixed(2);
+      if (newPnlUsd >= 0) wins++; else losses++;
+
+      const closedRecord: DemoClosedTrade = {
+        id: `closed-copy-${Date.now()}-${Math.random().toString(36).substring(7)}`,
+        tokenAddress: pos.tokenAddress,
+        tokenSymbol: pos.tokenSymbol,
+        tokenName: pos.tokenName,
+        chain: 'solana',
+        copiedFromWallet: pos.copiedFromWallet,
+        copiedFromWalletLabel: pos.copiedFromWalletLabel,
+        entryTimestamp: pos.entryTimestamp,
+        exitTimestamp: Date.now(),
+        holdDurationSeconds,
+        entryPriceUsd: pos.entryPriceUsd,
+        exitPriceUsd: newPrice,
+        investedUsd: pos.investedUsd,
+        returnedUsd: Math.max(0, totalReturned),
+        netPnlUsd: newPnlUsd,
+        netPnlPercent: newPnlPercent,
+        multiplier: +(newPrice / pos.entryPriceUsd).toFixed(2),
+        exitReason: 'STAGNATION_TIMEOUT',
+        exitReasonDetail: `Stagnation Timeout (${Math.round(holdDurationMinutes)}m elapsed, peak only +${pos.peakPnlPercent}%) - Capital recycled`,
+        peakPriceUsd: pos.peakPriceUsd ?? pos.entryPriceUsd,
+        peakPnlPercent: pos.peakPnlPercent ?? Math.max(0, newPnlPercent),
+        lowestPriceUsd: pos.lowestPriceUsd ?? pos.entryPriceUsd,
+        lowestPnlPercent: pos.lowestPnlPercent ?? Math.min(0, newPnlPercent),
+        profitMilestonesReached: pos.profitMilestonesReached || [],
+        alphaScoreAtEntry: pos.alphaScoreAtEntry,
+        entryRationale: pos.entryRationale,
+        simulatedGasFeeUsd: 0.005,
+      };
+      updatedClosedTrades.unshift(closedRecord);
+
+      newLogs.unshift({
+        id: `log-stag-${Date.now()}`,
+        timestamp: Date.now(),
+        type: 'EXIT_MANUAL',
+        tokenSymbol: pos.tokenSymbol,
+        tokenAddress: pos.tokenAddress,
+        chain: 'solana',
+        triggeredByWallet: pos.copiedFromWallet,
+        triggeredByWalletLabel: pos.copiedFromWalletLabel,
+        convictionScore: pos.alphaScoreAtEntry,
+        action: `STAGNATION EXIT (${newPnlPercent >= 0 ? '+' : ''}${newPnlPercent}%) - Closed ${pos.tokenSymbol} at $${newPrice}`,
+        rationale: `Position held for ${Math.round(holdDurationMinutes)}m with zero momentum (peak was only +${pos.peakPnlPercent}%). Capital recycled to newly breaking out gems. Net P&L: $${newPnlUsd}.`,
+        outcomePnlUsd: newPnlUsd,
+        outcomePnlPercent: newPnlPercent,
+        improvementLessonTag: '[STAGNATION_TIMEOUT: CAPITAL_RECYCLED]',
+        improvementNote: 'Capital freed up from stagnant sideways tokens to allocate to high-velocity breakouts.',
+      });
+      continue;
+    }
+
+    // Trigger A: Full Take-Profit Target Hit (Calibrated 1.35x / +35% Sweet Spot)
     if (newPrice >= pos.takeProfitPrice1) {
       const totalReturned = +(pos.investedUsd + newPnlUsd).toFixed(2);
       cash = +(cash + totalReturned).toFixed(2);
@@ -830,18 +972,19 @@ export async function runCopyBotTick(
   // 2. Real Whale Copy Evaluation: Scan tracked alpha whales for genuine recent buys
   const activePositionCount = updatedPositions.filter((p) => p.status === 'OPEN').length;
   if (activePositionCount < portfolio.maxConcurrentPositions && cash >= portfolio.allocationPerTradeUsd) {
-    const trackedAlphaWallets = SEED_WALLETS.slice(0, 4);
+    const trackedAlphaWallets = SEED_WALLETS.slice(0, 8);
+    const maxRecencyMs = 45 * 60 * 1000; // 45-minute recency window (widened from 15m)
 
     for (const wallet of trackedAlphaWallets) {
       if (updatedPositions.length >= portfolio.maxConcurrentPositions || cash < portfolio.allocationPerTradeUsd) break;
 
       try {
-        const recentSwaps = await fetchWalletOnChainSwaps(wallet.address, 3);
-        const fifteenMinsAgo = Date.now() - 15 * 60 * 1000;
+        const recentSwaps = await fetchWalletOnChainSwaps(wallet.address, 5);
+        const recencyThreshold = Date.now() - maxRecencyMs;
 
         // Check for fresh on-chain BUY
         const freshBuy = recentSwaps.find(
-          (s) => s.action === 'BUY' && s.timestamp >= fifteenMinsAgo && s.tokenAddress !== 'So11111111111111111111111111111111111111112'
+          (s) => s.action === 'BUY' && s.timestamp >= recencyThreshold && s.tokenAddress !== 'So11111111111111111111111111111111111111112'
         );
 
         if (freshBuy) {
@@ -890,7 +1033,7 @@ export async function runCopyBotTick(
             continue;
           }
 
-          // Fetch live spot price
+          // Fetch live spot price and liquidity
           const priceData = await fetchSolanaTokenPrice(freshBuy.tokenAddress);
           const spotPrice = priceData.priceUsd > 0 ? priceData.priceUsd : (freshBuy.priceSol ? freshBuy.priceSol * 184 : 0);
 
@@ -939,8 +1082,8 @@ export async function runCopyBotTick(
               tokenAmount,
               pnlUsd: 0,
               pnlPercent: 0,
-              takeProfitPrice1: +(spotPrice * 2.0).toFixed(6),
-              takeProfitPrice2: +(spotPrice * 5.0).toFixed(6),
+              takeProfitPrice1: +(spotPrice * 1.35).toFixed(6), // Calibrated TP1 (+35%)
+              takeProfitPrice2: +(spotPrice * 2.0).toFixed(6),  // Extended TP2 (+100%)
               stopLossPrice: +(spotPrice * (1 + portfolio.stopLossPercent / 100)).toFixed(6),
               status: 'OPEN',
               alphaScoreAtEntry: 95,
@@ -955,6 +1098,8 @@ export async function runCopyBotTick(
               profitMilestonesReached: [],
               isBreakevenProtected: false,
               isTrailingActive: false,
+              entryLiquidityUsd: priceData.liquidityUsd || 25000,
+              currentLiquidityUsd: priceData.liquidityUsd || 25000,
             };
 
             updatedPositions.push(newPos);
@@ -1058,8 +1203,16 @@ export async function runGemRadarBotTick(
 
     const livePriceData = await fetchSolanaTokenPrice(pos.tokenAddress);
     const newPrice = livePriceData.priceUsd > 0 ? livePriceData.priceUsd : pos.currentPriceUsd;
+    if (livePriceData.liquidityUsd) {
+      pos.currentLiquidityUsd = livePriceData.liquidityUsd;
+    }
+    if (!pos.entryLiquidityUsd && pos.currentLiquidityUsd) {
+      pos.entryLiquidityUsd = pos.currentLiquidityUsd;
+    }
     const newPnlUsd = +((newPrice - pos.entryPriceUsd) * pos.tokenAmount).toFixed(2);
     const newPnlPercent = +(((newPrice - pos.entryPriceUsd) / pos.entryPriceUsd) * 100).toFixed(1);
+    const holdDurationSeconds = Math.max(1, Math.round((Date.now() - pos.entryTimestamp) / 1000));
+    const holdDurationMinutes = holdDurationSeconds / 60;
 
     // Update Peak & Lowest MFE Metrics
     updatePositionPeakAndMilestones(pos, newPrice, newPnlPercent);
@@ -1088,7 +1241,137 @@ export async function runGemRadarBotTick(
       }
     }
 
-    // Trigger A: Full Take-Profit Target Hit (2.0x Double)
+    // Trigger CB: Circuit Breaker (Flash Rug / Liquidity Pull Detection)
+    const isLiqDrained = !!(pos.entryLiquidityUsd && pos.currentLiquidityUsd && pos.entryLiquidityUsd > 0 &&
+      ((pos.entryLiquidityUsd - pos.currentLiquidityUsd) / pos.entryLiquidityUsd >= 0.25));
+    const isLiqBelowFloor = !!(pos.currentLiquidityUsd !== undefined && pos.currentLiquidityUsd > 0 && pos.currentLiquidityUsd < 8000);
+    const isFlashCrash = newPnlPercent <= -50;
+
+    if (isLiqDrained || isLiqBelowFloor || isFlashCrash) {
+      const totalReturned = +(pos.investedUsd + newPnlUsd).toFixed(2);
+      cash = +(cash + Math.max(0, totalReturned)).toFixed(2);
+      realizedPnl = +(realizedPnl + newPnlUsd).toFixed(2);
+      losses++;
+
+      // Emergency 2-hour quarantine cooldown for rug/crash tokens
+      tokenStopLossCooldownMap.set(pos.tokenAddress, Date.now() + 2 * 3600 * 1000);
+
+      const drainPct = (pos.entryLiquidityUsd && pos.currentLiquidityUsd && pos.entryLiquidityUsd > 0)
+        ? Math.round(((pos.entryLiquidityUsd - pos.currentLiquidityUsd) / pos.entryLiquidityUsd) * 100)
+        : 0;
+
+      const reasonDetail = isLiqDrained
+        ? `Circuit Breaker: Pool liquidity drained by ${drainPct}% ($${Math.round(pos.entryLiquidityUsd || 0)} -> $${Math.round(pos.currentLiquidityUsd || 0)})`
+        : isLiqBelowFloor
+        ? `Circuit Breaker: Liquidity collapsed below $8,000 floor ($${Math.round(pos.currentLiquidityUsd || 0)})`
+        : `Circuit Breaker: Flash price crash (${newPnlPercent}%) detected`;
+
+      const closedRecord: DemoClosedTrade = {
+        id: `closed-gem-${Date.now()}-${Math.random().toString(36).substring(7)}`,
+        tokenAddress: pos.tokenAddress,
+        tokenSymbol: pos.tokenSymbol,
+        tokenName: pos.tokenName,
+        chain: 'solana',
+        copiedFromWallet: pos.copiedFromWallet,
+        copiedFromWalletLabel: 'Gem Radar Velocity Breakout',
+        entryTimestamp: pos.entryTimestamp,
+        exitTimestamp: Date.now(),
+        holdDurationSeconds,
+        entryPriceUsd: pos.entryPriceUsd,
+        exitPriceUsd: newPrice,
+        investedUsd: pos.investedUsd,
+        returnedUsd: Math.max(0, totalReturned),
+        netPnlUsd: newPnlUsd,
+        netPnlPercent: newPnlPercent,
+        multiplier: +(newPrice / pos.entryPriceUsd).toFixed(2),
+        exitReason: 'LIQUIDITY_RUG_PULL',
+        exitReasonDetail: reasonDetail,
+        peakPriceUsd: pos.peakPriceUsd ?? pos.entryPriceUsd,
+        peakPnlPercent: pos.peakPnlPercent ?? Math.max(0, newPnlPercent),
+        lowestPriceUsd: pos.lowestPriceUsd ?? pos.entryPriceUsd,
+        lowestPnlPercent: pos.lowestPnlPercent ?? Math.min(0, newPnlPercent),
+        profitMilestonesReached: pos.profitMilestonesReached || [],
+        alphaScoreAtEntry: pos.alphaScoreAtEntry,
+        entryRationale: pos.entryRationale,
+        simulatedGasFeeUsd: 0.005,
+      };
+      updatedClosedTrades.unshift(closedRecord);
+
+      newLogs.unshift({
+        id: `log-gem-cb-${Date.now()}`,
+        timestamp: Date.now(),
+        type: 'EXIT_STOP_LOSS',
+        tokenSymbol: pos.tokenSymbol,
+        tokenAddress: pos.tokenAddress,
+        chain: 'solana',
+        convictionScore: 5,
+        action: `CIRCUIT BREAKER ACTIVATED: Emergency Exit on ${pos.tokenSymbol} at $${newPrice}`,
+        rationale: `${reasonDetail}. Emergency market exit executed on Gem Breakout to protect capital. Placed on 2-hour quarantine cooldown.`,
+        outcomePnlUsd: newPnlUsd,
+        outcomePnlPercent: newPnlPercent,
+        improvementLessonTag: '[CIRCUIT_BREAKER: RUG_DETECTED]',
+        improvementNote: 'Emergency liquidity/crash filter triggered to prevent total loss.',
+      });
+      continue;
+    }
+
+    // Trigger ST: Stagnation / Time-Decay Exit (90m elapsed with < 8% peak)
+    if (holdDurationMinutes >= 90 && (pos.peakPnlPercent ?? 0) < 8) {
+      const totalReturned = +(pos.investedUsd + newPnlUsd).toFixed(2);
+      cash = +(cash + Math.max(0, totalReturned)).toFixed(2);
+      realizedPnl = +(realizedPnl + newPnlUsd).toFixed(2);
+      if (newPnlUsd >= 0) wins++; else losses++;
+
+      const closedRecord: DemoClosedTrade = {
+        id: `closed-gem-${Date.now()}-${Math.random().toString(36).substring(7)}`,
+        tokenAddress: pos.tokenAddress,
+        tokenSymbol: pos.tokenSymbol,
+        tokenName: pos.tokenName,
+        chain: 'solana',
+        copiedFromWallet: pos.copiedFromWallet,
+        copiedFromWalletLabel: 'Gem Radar Velocity Breakout',
+        entryTimestamp: pos.entryTimestamp,
+        exitTimestamp: Date.now(),
+        holdDurationSeconds,
+        entryPriceUsd: pos.entryPriceUsd,
+        exitPriceUsd: newPrice,
+        investedUsd: pos.investedUsd,
+        returnedUsd: Math.max(0, totalReturned),
+        netPnlUsd: newPnlUsd,
+        netPnlPercent: newPnlPercent,
+        multiplier: +(newPrice / pos.entryPriceUsd).toFixed(2),
+        exitReason: 'STAGNATION_TIMEOUT',
+        exitReasonDetail: `Stagnation Timeout (${Math.round(holdDurationMinutes)}m elapsed, peak only +${pos.peakPnlPercent}%) - Capital recycled`,
+        peakPriceUsd: pos.peakPriceUsd ?? pos.entryPriceUsd,
+        peakPnlPercent: pos.peakPnlPercent ?? Math.max(0, newPnlPercent),
+        lowestPriceUsd: pos.lowestPriceUsd ?? pos.entryPriceUsd,
+        lowestPnlPercent: pos.lowestPnlPercent ?? Math.min(0, newPnlPercent),
+        profitMilestonesReached: pos.profitMilestonesReached || [],
+        alphaScoreAtEntry: pos.alphaScoreAtEntry,
+        entryRationale: pos.entryRationale,
+        simulatedGasFeeUsd: 0.005,
+      };
+      updatedClosedTrades.unshift(closedRecord);
+
+      newLogs.unshift({
+        id: `log-gem-stag-${Date.now()}`,
+        timestamp: Date.now(),
+        type: 'EXIT_MANUAL',
+        tokenSymbol: pos.tokenSymbol,
+        tokenAddress: pos.tokenAddress,
+        chain: 'solana',
+        convictionScore: pos.alphaScoreAtEntry,
+        action: `STAGNATION EXIT (${newPnlPercent >= 0 ? '+' : ''}${newPnlPercent}%) - Closed ${pos.tokenSymbol} at $${newPrice}`,
+        rationale: `Position held for ${Math.round(holdDurationMinutes)}m with zero momentum (peak was only +${pos.peakPnlPercent}%). Capital recycled to newly breaking out gems. Net P&L: $${newPnlUsd}.`,
+        outcomePnlUsd: newPnlUsd,
+        outcomePnlPercent: newPnlPercent,
+        improvementLessonTag: '[STAGNATION_TIMEOUT: CAPITAL_RECYCLED]',
+        improvementNote: 'Capital freed up from stagnant sideways tokens to allocate to high-velocity breakouts.',
+      });
+      continue;
+    }
+
+    // Trigger A: Full Take-Profit Target Hit (Calibrated 1.35x / +35% Sweet Spot)
     if (newPrice >= pos.takeProfitPrice1) {
       const totalReturned = +(pos.investedUsd + newPnlUsd).toFixed(2);
       cash = +(cash + totalReturned).toFixed(2);
@@ -1363,8 +1646,8 @@ export async function runGemRadarBotTick(
           continue;
         }
 
-        // Entry criteria: Confidence >= 80, liquidity depth >= $10k, valid spot price
-        if (sig.confidenceScore >= 80 && sig.liquidityUsd >= 10000 && sig.priceUsd > 0) {
+        // Entry criteria: Confidence >= 80, liquidity depth >= $15k (Strict Floor), valid spot price
+        if (sig.confidenceScore >= 80 && sig.liquidityUsd >= 15000 && sig.priceUsd > 0) {
           const allocation = portfolio.allocationPerTradeUsd;
           cash = +(cash - allocation).toFixed(2);
           const spotPrice = sig.priceUsd;
@@ -1385,8 +1668,8 @@ export async function runGemRadarBotTick(
             tokenAmount,
             pnlUsd: 0,
             pnlPercent: 0,
-            takeProfitPrice1: +(spotPrice * 2.0).toFixed(6),
-            takeProfitPrice2: +(spotPrice * 5.0).toFixed(6),
+            takeProfitPrice1: +(spotPrice * 1.35).toFixed(6), // Calibrated TP1 (+35%)
+            takeProfitPrice2: +(spotPrice * 2.0).toFixed(6),  // Extended TP2 (+100%)
             stopLossPrice: +(spotPrice * (1 + portfolio.stopLossPercent / 100)).toFixed(6),
             status: 'OPEN',
             alphaScoreAtEntry: sig.confidenceScore,
@@ -1400,6 +1683,8 @@ export async function runGemRadarBotTick(
             profitMilestonesReached: [],
             isBreakevenProtected: false,
             isTrailingActive: false,
+            entryLiquidityUsd: sig.liquidityUsd || 25000,
+            currentLiquidityUsd: sig.liquidityUsd || 25000,
           };
 
           updatedPositions.push(newPos);

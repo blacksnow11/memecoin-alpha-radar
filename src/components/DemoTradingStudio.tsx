@@ -32,6 +32,7 @@ import {
   ListFilter,
   Check,
   Activity,
+  Trash2,
 } from 'lucide-react';
 import { DemoClosedTrade, DemoPortfolio, DemoPosition, PeriodicPnlSummary, ProfitLadderAnalytics, ServerWorkerStatus } from '@/lib/types';
 import { SUPPORTED_CHAINS, formatUsd, getExplorerAddressUrl } from '@/lib/chains';
@@ -53,6 +54,7 @@ interface DemoTradingStudioProps {
   gemPortfolio?: DemoPortfolio;
   onTick: () => void;
   onReload: () => void;
+  onReset?: () => void;
   onToggleBot: () => void;
   onClosePosition: (posId: string) => void;
   onUpdateConfig: (config: Partial<DemoPortfolio>) => void;
@@ -97,6 +99,7 @@ export function DemoTradingStudio({
   gemPortfolio,
   onTick,
   onReload,
+  onReset,
   onToggleBot,
   onClosePosition,
   onUpdateConfig,
@@ -626,7 +629,7 @@ export function DemoTradingStudio({
               )}
             </div>
             <h2 className="text-xl font-bold text-white tracking-wide">
-              {botMode === 'gem_radar' ? 'Gem Radar Breakout Hunter ($100 Bankroll)' : 'Smart Money Copy-Trade Bot ($100 Bankroll)'}
+              {botMode === 'gem_radar' ? 'Gem Radar Breakout Hunter ($1,000 Bankroll)' : 'Smart Money Copy-Trade Bot ($1,000 Bankroll)'}
             </h2>
             <span
               className={`px-2.5 py-0.5 rounded-full text-xs font-mono font-bold flex items-center space-x-1.5 ${
@@ -668,37 +671,52 @@ export function DemoTradingStudio({
           </p>
         </div>
 
-        {/* Bot Controls & Reload Button */}
-        <div className="flex items-center space-x-3 w-full md:w-auto">
+        {/* Bot Controls, Reload & Reset Buttons */}
+        <div className="flex flex-wrap items-center gap-2.5 w-full md:w-auto">
           <button
             onClick={onTick}
             className="px-3.5 py-2 rounded-xl text-xs font-semibold bg-cyber-accent text-slate-950 hover:bg-cyber-accent/90 transition-all flex items-center space-x-1.5 shadow-md shadow-cyber-accent/20"
             title="Fetch live market spot prices and evaluate trades"
           >
             <Zap className="w-4 h-4 fill-slate-950 text-slate-950" />
-            <span>Execute Live Spot Tick</span>
+            <span>Live Spot Tick</span>
           </button>
 
           <button
             onClick={onToggleBot}
-            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center space-x-1.5 ${
+            className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all flex items-center space-x-1.5 ${
               portfolio.isBotRunning
                 ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 hover:bg-amber-500/30'
                 : 'bg-emerald-500 text-slate-950 hover:bg-emerald-400 font-bold shadow-lg shadow-emerald-500/20'
             }`}
           >
             {portfolio.isBotRunning ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
-            <span>{portfolio.isBotRunning ? 'Pause Bot' : 'Start Auto-Trading'}</span>
+            <span>{portfolio.isBotRunning ? 'Pause Bot' : 'Start Auto'}</span>
           </button>
 
           <button
             onClick={onReload}
-            className="px-4 py-2 rounded-xl text-xs font-bold bg-blue-600 hover:bg-blue-500 text-white shadow-lg transition-colors flex items-center space-x-1.5"
+            className="px-3.5 py-2 rounded-xl text-xs font-bold bg-blue-600 hover:bg-blue-500 text-white shadow-lg transition-colors flex items-center space-x-1.5"
             title="Add another demo $100 immediately"
           >
             <RotateCcw className="w-4 h-4" />
             <span>Reload $100</span>
           </button>
+
+          {onReset && (
+            <button
+              onClick={() => {
+                if (window.confirm('Reset both portfolios to a fresh $1,000 clean slate? This will clear previous closed trades and open positions to benchmark the new v2.2 enhancements.')) {
+                  onReset();
+                }
+              }}
+              className="px-3 py-2 rounded-xl text-xs font-semibold bg-rose-950/70 hover:bg-rose-900/90 text-rose-300 border border-rose-500/40 transition-colors flex items-center space-x-1.5"
+              title="Reset both bots to pristine $1,000 clean slate"
+            >
+              <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+              <span>Reset Data</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -1409,12 +1427,16 @@ export function DemoTradingStudio({
                                                         ? 'bg-cyan-950 text-cyan-300 border border-cyan-500/40'
                                                         : trade.exitReason === 'BREAKEVEN_STOP'
                                                         ? 'bg-indigo-950 text-indigo-300 border border-indigo-500/40'
+                                                        : trade.exitReason === 'LIQUIDITY_RUG_PULL'
+                                                        ? 'bg-red-950 text-red-300 border border-red-500/60'
+                                                        : trade.exitReason === 'STAGNATION_TIMEOUT'
+                                                        ? 'bg-amber-950 text-amber-300 border border-amber-500/50'
                                                         : trade.exitReason === 'STOP_LOSS'
                                                         ? 'bg-rose-950 text-rose-300 border border-rose-500/40'
-                                                        : 'bg-amber-950 text-amber-300 border border-amber-500/40'
+                                                        : 'bg-slate-900 text-slate-300 border border-slate-700/40'
                                                     }`}
                                                   >
-                                                    {trade.exitReason}
+                                                    {trade.exitReason === 'LIQUIDITY_RUG_PULL' ? 'RUG CIRCUIT BREAKER' : trade.exitReason === 'STAGNATION_TIMEOUT' ? 'STAGNATION TIMEOUT' : trade.exitReason}
                                                   </span>
                                                 </td>
                                                 <td className="py-2 px-3 text-slate-300 font-sans text-xs">
@@ -1665,12 +1687,22 @@ export function DemoTradingStudio({
                                       ? 'bg-cyan-950/80 text-cyan-300 border border-cyan-500/40'
                                       : trade.exitReason === 'BREAKEVEN_STOP'
                                       ? 'bg-indigo-950/80 text-indigo-300 border border-indigo-500/40'
+                                      : trade.exitReason === 'LIQUIDITY_RUG_PULL'
+                                      ? 'bg-red-950/90 text-red-300 border border-red-500/70 shadow-sm shadow-red-900/40'
+                                      : trade.exitReason === 'STAGNATION_TIMEOUT'
+                                      ? 'bg-amber-950/80 text-amber-300 border border-amber-500/50'
                                       : trade.exitReason === 'STOP_LOSS'
                                       ? 'bg-rose-950/80 text-rose-300 border border-rose-500/40'
-                                      : 'bg-amber-950/80 text-amber-300 border border-amber-500/40'
+                                      : 'bg-slate-900 text-slate-300 border border-slate-700/40'
                                   }`}
                                 >
-                                  <span>{trade.exitReason}</span>
+                                  <span>
+                                    {trade.exitReason === 'LIQUIDITY_RUG_PULL'
+                                      ? '🚨 RUG CIRCUIT BREAKER'
+                                      : trade.exitReason === 'STAGNATION_TIMEOUT'
+                                      ? '⏱️ STAGNATION TIMEOUT'
+                                      : trade.exitReason}
+                                  </span>
                                 </span>
                                 {trade.peakPnlPercent !== undefined && trade.peakPnlPercent > 0 && (
                                   <div className="text-[10px] text-cyan-400 font-mono mt-0.5" title={`Peaked at $${trade.peakPriceUsd}`}>

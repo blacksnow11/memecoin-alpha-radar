@@ -20,6 +20,10 @@ export async function detectPreBreakoutGemSignals(): Promise<PreBreakoutGemSigna
     const volume5m = token.volume5mUsd || 0;
     const volume1h = token.volume1hUsd || 0;
     const liquidity = token.liquidityUsd || 0;
+
+    // Strict Entry Guard: Reject hyper-fragile pools with < $15k liquidity to prevent flash rug vulnerability
+    if (liquidity < 15000) continue;
+
     const buyers = token.buyers24h || 0;
     const sellers = token.sellers24h || 1;
     const buyRatio = +(buyers / Math.max(1, sellers)).toFixed(2);

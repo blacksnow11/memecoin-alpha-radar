@@ -9,7 +9,10 @@ import {
 } from './demo-trading-engine';
 import { DecisionLog, DemoPortfolio, DemoPosition } from './types';
 
+export const CURRENT_STATE_VERSION = 3;
+
 export interface StoredBotState {
+  version?: number;
   copyBot: {
     portfolio: DemoPortfolio;
     positions: DemoPosition[];
@@ -44,15 +47,24 @@ function resolveStoragePath(): string {
   return activeFilePath;
 }
 
-function getInitialState(): StoredBotState {
+export function getInitialState(): StoredBotState {
   return {
+    version: CURRENT_STATE_VERSION,
     copyBot: {
-      portfolio: { ...DEFAULT_DEMO_PORTFOLIO },
+      portfolio: {
+        ...DEFAULT_DEMO_PORTFOLIO,
+        equityHistory: [{ timestamp: Date.now(), equityUsd: 1000.00 }],
+        closedTrades: [],
+      },
       positions: [],
       logs: [...INITIAL_DECISION_LOGS],
     },
     gemRadarBot: {
-      portfolio: { ...DEFAULT_GEM_RADAR_PORTFOLIO },
+      portfolio: {
+        ...DEFAULT_GEM_RADAR_PORTFOLIO,
+        equityHistory: [{ timestamp: Date.now(), equityUsd: 1000.00 }],
+        closedTrades: [],
+      },
       positions: [],
       logs: [...INITIAL_GEM_RADAR_LOGS],
     },
@@ -60,6 +72,13 @@ function getInitialState(): StoredBotState {
     totalTicksExecuted: 0,
     workerStartedAt: Date.now(),
   };
+}
+
+export function resetBotState(): StoredBotState {
+  const fresh = getInitialState();
+  memoryState = fresh;
+  saveBotStateToDisk(fresh);
+  return fresh;
 }
 
 export function loadBotStateFromDisk(): StoredBotState {
@@ -83,21 +102,15 @@ export function loadBotStateFromDisk(): StoredBotState {
       const raw = fs.readFileSync(targetFile, 'utf-8');
       const parsed = JSON.parse(raw);
       if (parsed && parsed.copyBot && parsed.gemRadarBot) {
-        // Upgrade stored demo state: uncap limits to $1,000 capital and 25 concurrent slots
-        for (const bot of [parsed.copyBot, parsed.gemRadarBot]) {
-          if (bot && bot.portfolio) {
-            if (!bot.portfolio.maxConcurrentPositions || bot.portfolio.maxConcurrentPositions < 25) {
-              bot.portfolio.maxConcurrentPositions = 25;
-            }
-            if (!bot.portfolio.startingCash || bot.portfolio.startingCash < 1000) {
-              const diff = 1000 - (bot.portfolio.startingCash || 100);
-              bot.portfolio.startingCash = 1000;
-              bot.portfolio.currentCash = +((bot.portfolio.currentCash || 0) + diff).toFixed(2);
-              bot.portfolio.totalDemoCapitalLoaded = +((bot.portfolio.totalDemoCapitalLoaded || 0) + diff).toFixed(2);
-              bot.portfolio.totalEquityUsd = +((bot.portfolio.totalEquityUsd || 0) + diff).toFixed(2);
-            }
-          }
+        // Auto-Migration & Reset: Version 3 resets to pristine clean slate with Calibrated TPs & Circuit Breakers
+        if (!parsed.version || parsed.version < CURRENT_STATE_VERSION) {
+          console.log(`[BotStorage] Auto-migrating state to Version ${CURRENT_STATE_VERSION}: clean-slate reset`);
+          const fresh = getInitialState();
+          memoryState = fresh;
+          saveBotStateToDisk(fresh);
+          return fresh;
         }
+
         memoryState = parsed;
         return memoryState!;
       }

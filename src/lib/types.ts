@@ -162,6 +162,8 @@ export interface DemoPosition {
   gemPattern?: string;
   verifiedWhaleHolding?: boolean;
   whaleEntryTimestamp?: number;
+  entryLiquidityUsd?: number;
+  currentLiquidityUsd?: number;
 }
 
 export interface DemoClosedTrade {
@@ -184,7 +186,7 @@ export interface DemoClosedTrade {
   netPnlUsd: number;
   netPnlPercent: number;
   multiplier: number; // e.g. 2.0x, 0.8x
-  exitReason: 'TAKE_PROFIT' | 'STOP_LOSS' | 'MANUAL_CLOSE' | 'TRAILING_STOP' | 'BREAKEVEN_STOP';
+  exitReason: 'TAKE_PROFIT' | 'STOP_LOSS' | 'MANUAL_CLOSE' | 'TRAILING_STOP' | 'BREAKEVEN_STOP' | 'LIQUIDITY_RUG_PULL' | 'STAGNATION_TIMEOUT';
   exitReasonDetail: string;
   // Maximum Favorable Excursion (MFE) Peak Analytics
   peakPriceUsd?: number;

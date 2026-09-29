@@ -190,6 +190,36 @@ export default function Home() {
     }
   };
 
+  // Handle reset to $1,000 clean slate
+  const handleReset = async () => {
+    try {
+      const res = await fetch('/api/demo-bot', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'reset' }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        if (data.copyBot) {
+          setCopyPortfolio(data.copyBot.portfolio);
+          setCopyPositions(data.copyBot.positions || []);
+          setCopyLogs(data.copyBot.logs || []);
+        }
+        if (data.gemRadarBot) {
+          setGemPortfolio(data.gemRadarBot.portfolio);
+          setGemPositions(data.gemRadarBot.positions || []);
+          setGemLogs(data.gemRadarBot.logs || []);
+        }
+        if (data.profitLadder) {
+          setProfitLadder(data.profitLadder);
+        }
+        showToast('Both trading engines have been cleanly reset to pristine $1,000 baselines!');
+      }
+    } catch (err) {
+      console.error('Reset error:', err);
+    }
+  };
+
   // Toggle bot running
   const handleToggleBot = async () => {
     try {
@@ -374,6 +404,7 @@ export default function Home() {
             gemPortfolio={gemPortfolio}
             onTick={handleTick}
             onReload={handleReload}
+            onReset={handleReset}
             onToggleBot={handleToggleBot}
             onClosePosition={handleClosePosition}
             onUpdateConfig={handleUpdateConfig}
