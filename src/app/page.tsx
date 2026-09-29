@@ -8,7 +8,7 @@ import { WalletInspectorModal } from '@/components/WalletInspectorModal';
 import { BotExporterModal } from '@/components/BotExporterModal';
 import { DemoTradingStudio } from '@/components/DemoTradingStudio';
 import { RecordedLogsViewer } from '@/components/RecordedLogsViewer';
-import { ChainId, DecisionLog, DemoPortfolio, DemoPosition, WalletProfile, ServerWorkerStatus } from '@/lib/types';
+import { ChainId, DecisionLog, DemoPortfolio, DemoPosition, ProfitLadderAnalytics, WalletProfile, ServerWorkerStatus } from '@/lib/types';
 import {
   DEFAULT_DEMO_PORTFOLIO,
   DEFAULT_GEM_RADAR_PORTFOLIO,
@@ -42,15 +42,18 @@ export default function Home() {
   // Dual-Engine Trading State
   const [botMode, setBotMode] = useState<'copy' | 'gem_radar'>('copy');
 
-  // 1. Smart Money Copy Bot ($100 Bankroll)
+  // 1. Smart Money Copy Bot ($1,000 Bankroll)
   const [copyPortfolio, setCopyPortfolio] = useState<DemoPortfolio>(DEFAULT_DEMO_PORTFOLIO);
   const [copyPositions, setCopyPositions] = useState<DemoPosition[]>(INITIAL_OPEN_POSITIONS);
   const [copyLogs, setCopyLogs] = useState<DecisionLog[]>(INITIAL_DECISION_LOGS);
 
-  // 2. Gem Radar Breakout Hunter ($100 Bankroll)
+  // 2. Gem Radar Breakout Hunter ($1,000 Bankroll)
   const [gemPortfolio, setGemPortfolio] = useState<DemoPortfolio>(DEFAULT_GEM_RADAR_PORTFOLIO);
   const [gemPositions, setGemPositions] = useState<DemoPosition[]>([]);
   const [gemLogs, setGemLogs] = useState<DecisionLog[]>(INITIAL_GEM_RADAR_LOGS);
+
+  // Profitability Milestone Ladder Analytics
+  const [profitLadder, setProfitLadder] = useState<ProfitLadderAnalytics | null>(null);
 
   // 24/7 Autonomous Server Worker Telemetry
   const [serverWorker, setServerWorker] = useState<ServerWorkerStatus | null>(null);
@@ -109,6 +112,9 @@ export default function Home() {
         if (data.serverWorker) {
           setServerWorker(data.serverWorker);
         }
+        if (data.profitLadder) {
+          setProfitLadder(data.profitLadder);
+        }
       }
     } catch (err) {
       console.error('Failed to load demo bot state:', err);
@@ -147,6 +153,9 @@ export default function Home() {
         }
         if (data.serverWorker) {
           setServerWorker(data.serverWorker);
+        }
+        if (data.profitLadder) {
+          setProfitLadder(data.profitLadder);
         }
       }
     } catch (err) {
@@ -316,7 +325,7 @@ export default function Home() {
                   className="px-4 py-2 rounded-xl text-xs font-semibold bg-purple-600/20 border border-purple-500/40 hover:bg-purple-600/30 text-purple-300 transition-all flex items-center space-x-2 shadow-lg shadow-purple-600/10"
                 >
                   <Bot className="w-4 h-4" />
-                  <span>Dual Demo Studio ($200)</span>
+                  <span>Dual Demo Studio ($2,000)</span>
                 </button>
               </div>
             </div>
@@ -370,6 +379,7 @@ export default function Home() {
             onUpdateConfig={handleUpdateConfig}
             onViewLogs={() => setActiveTab('logs')}
             serverWorker={serverWorker}
+            profitLadder={profitLadder}
           />
         )}
 

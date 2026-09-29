@@ -33,13 +33,14 @@ import {
   Check,
   Activity,
 } from 'lucide-react';
-import { DemoClosedTrade, DemoPortfolio, DemoPosition, PeriodicPnlSummary, ServerWorkerStatus } from '@/lib/types';
+import { DemoClosedTrade, DemoPortfolio, DemoPosition, PeriodicPnlSummary, ProfitLadderAnalytics, ServerWorkerStatus } from '@/lib/types';
 import { SUPPORTED_CHAINS, formatUsd, getExplorerAddressUrl } from '@/lib/chains';
 import {
   aggregatePnlByDay,
   aggregatePnlByWeek,
   aggregatePnlByMonth,
   calculateTimeframePnlMetrics,
+  calculateProfitLadderAnalytics,
   filterTradesByTimeframe,
 } from '@/lib/demo-trading-engine';
 
@@ -57,6 +58,7 @@ interface DemoTradingStudioProps {
   onUpdateConfig: (config: Partial<DemoPortfolio>) => void;
   onViewLogs: () => void;
   serverWorker?: ServerWorkerStatus | null;
+  profitLadder?: ProfitLadderAnalytics | null;
 }
 
 function formatDuration(seconds: number): string {
@@ -100,11 +102,15 @@ export function DemoTradingStudio({
   onUpdateConfig,
   onViewLogs,
   serverWorker,
+  profitLadder,
 }: DemoTradingStudioProps) {
   const [minScore, setMinScore] = useState(portfolio.minConvictionThreshold);
   const [allocation, setAllocation] = useState(portfolio.allocationPerTradeUsd);
   const [stopLoss, setStopLoss] = useState(portfolio.stopLossPercent);
   const [autoReload, setAutoReload] = useState(portfolio.isAutoReloadEnabled);
+
+  // Profitability Milestone Ladder collapse toggle
+  const [showMilestoneLadder, setShowMilestoneLadder] = useState(true);
 
   // Timeframe selector for top-level metrics
   const [metricTimeframe, setMetricTimeframe] = useState<'all' | '24h' | '7d' | '30d'>('all');
@@ -134,6 +140,12 @@ export function DemoTradingStudio({
 
   const openPositions = positions.filter((p) => p.status === 'OPEN');
   const closedTrades = portfolio.closedTrades || [];
+
+  // MFE Profitability Ladder Analytics
+  const activeProfitLadder = useMemo(() => {
+    if (profitLadder) return profitLadder;
+    return calculateProfitLadderAnalytics(closedTrades, positions);
+  }, [profitLadder, closedTrades, positions]);
 
   // Top-level timeframe metrics
   const timeframeMetrics = useMemo(() => {
@@ -285,6 +297,223 @@ export function DemoTradingStudio({
     );
   };
 
+  // Render Profitability Milestone Ladder & Target Optimizer (MFE Analytics)
+  const renderProfitabilityMilestoneLadder = () => {
+    const {
+      milestones,
+      totalTradesTracked,
+      avgPeakPnlAllPercent,
+      avgPeakPnlWinnersPercent,
+      avgPeakPnlLossesPercent,
+      optimalTakeProfitTargetPercent,
+      tradesReversingAfterProfitCount,
+    } = activeProfitLadder;
+
+    return (
+      <div className="bg-cyber-card rounded-2xl border border-cyber-border p-5 space-y-4 shadow-xl relative overflow-hidden">
+        {/* Subtle Ambient Glow */}
+        <div className="absolute top-0 right-1/4 w-96 h-24 bg-cyan-500/10 rounded-full blur-3xl pointer-events-none" />
+
+        {/* Header */}
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border-b border-cyber-border/70 pb-3">
+          <div className="flex items-center space-x-2.5">
+            <div className="p-2 rounded-xl bg-cyan-500/10 border border-cyan-500/30 text-cyan-400">
+              <Target className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="flex items-center space-x-2">
+                <h3 className="text-sm font-black text-white tracking-tight">
+                  Profitability Milestone Ladder & Target Optimizer
+                </h3>
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-cyan-500/20 text-cyan-300 border border-cyan-500/40">
+                  MFE Engine
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-400">
+                Maximum Favorable Excursion analysis &mdash; tracking profit levels trades hit before reversing to discover optimal Take-Profit targets.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center space-x-2 self-end sm:self-center">
+            <button
+              onClick={() => setShowMilestoneLadder(!showMilestoneLadder)}
+              className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-900 hover:bg-slate-800 text-slate-300 border border-cyber-border transition-colors flex items-center space-x-1.5"
+            >
+              <span>{showMilestoneLadder ? 'Collapse Ladder' : 'Expand Ladder'}</span>
+              {showMilestoneLadder ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+            </button>
+          </div>
+        </div>
+
+        {showMilestoneLadder && (
+          <div className="space-y-4">
+            {/* Top Stat Cards Grid */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              {/* Optimal Target Card */}
+              <div className="bg-slate-950/70 p-3 rounded-xl border border-cyan-500/40 relative">
+                <div className="text-[10px] text-cyan-400 font-bold uppercase tracking-wider flex items-center space-x-1">
+                  <Sparkles className="w-3 h-3" />
+                  <span>Optimal Take-Profit</span>
+                </div>
+                <div className="text-xl sm:text-2xl font-black text-white font-mono mt-0.5">
+                  +{optimalTakeProfitTargetPercent}%
+                </div>
+                <div className="text-[10px] text-slate-400 mt-0.5 leading-tight">
+                  Calibrated for highest EV hit rate
+                </div>
+              </div>
+
+              {/* Avg Peak All Trades */}
+              <div className="bg-slate-950/70 p-3 rounded-xl border border-cyber-border">
+                <div className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">
+                  Avg Peak (All Trades)
+                </div>
+                <div className="text-xl sm:text-2xl font-black text-cyan-300 font-mono mt-0.5">
+                  +{avgPeakPnlAllPercent}%
+                </div>
+                <div className="text-[10px] text-slate-500 mt-0.5 leading-tight">
+                  Across {totalTradesTracked} total evaluated
+                </div>
+              </div>
+
+              {/* Avg Peak on Stopped-Out Trades */}
+              <div className="bg-slate-950/70 p-3 rounded-xl border border-rose-500/30">
+                <div className="text-[10px] text-rose-400 font-bold uppercase tracking-wider flex items-center space-x-1">
+                  <Shield className="w-3 h-3" />
+                  <span>Peak on Stop-Outs</span>
+                </div>
+                <div className="text-xl sm:text-2xl font-black text-rose-300 font-mono mt-0.5">
+                  +{avgPeakPnlLossesPercent}%
+                </div>
+                <div className="text-[10px] text-slate-400 mt-0.5 leading-tight">
+                  Profit reached before retracement
+                </div>
+              </div>
+
+              {/* Reversals Defended */}
+              <div className="bg-slate-950/70 p-3 rounded-xl border border-emerald-500/30">
+                <div className="text-[10px] text-emerald-400 font-bold uppercase tracking-wider flex items-center space-x-1">
+                  <Zap className="w-3 h-3" />
+                  <span>Reversals Defended</span>
+                </div>
+                <div className="text-xl sm:text-2xl font-black text-emerald-300 font-mono mt-0.5">
+                  {tradesReversingAfterProfitCount} Trades
+                </div>
+                <div className="text-[10px] text-slate-400 mt-0.5 leading-tight">
+                  Peaked &ge; +15% before pullback
+                </div>
+              </div>
+            </div>
+
+            {/* 6-Tier Progression Ladder */}
+            <div className="bg-slate-950/60 p-4 rounded-xl border border-cyber-border space-y-3">
+              <div className="flex items-center justify-between text-xs font-bold text-slate-300">
+                <span className="flex items-center space-x-1.5">
+                  <BarChart3 className="w-4 h-4 text-cyber-accent" />
+                  <span>Profitability Milestone Conversion Rates (% of Trades Reaching Target)</span>
+                </span>
+                <span className="text-[11px] text-slate-400 font-mono">
+                  Sample: {totalTradesTracked} trades
+                </span>
+              </div>
+
+              <div className="space-y-2.5 pt-1">
+                {milestones.map((m) => {
+                  const isOptimal = m.milestonePercent === optimalTakeProfitTargetPercent;
+                  const isHighRate = m.hitRatePercent >= 50;
+                  const isMediumRate = m.hitRatePercent >= 25;
+
+                  return (
+                    <div key={m.milestonePercent} className="space-y-1">
+                      <div className="flex items-center justify-between text-xs">
+                        <div className="flex items-center space-x-2">
+                          <span className="font-bold text-white font-mono w-28">
+                            {m.label}
+                          </span>
+                          {isOptimal && (
+                            <span className="px-1.5 py-0.2 rounded text-[9px] font-extrabold bg-cyan-500/20 text-cyan-300 border border-cyan-500/50">
+                              RECOMMENDED TARGET
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex items-center space-x-2 font-mono">
+                          <span className="text-slate-400 text-[11px]">
+                            {m.hitCount} / {m.totalEvaluated} trades
+                          </span>
+                          <span
+                            className={`font-black text-xs ${
+                              isHighRate
+                                ? 'text-emerald-400'
+                                : isMediumRate
+                                ? 'text-cyan-400'
+                                : 'text-slate-400'
+                            }`}
+                          >
+                            {m.hitRatePercent.toFixed(1)}%
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Bar */}
+                      <div className="h-2.5 w-full bg-slate-900 rounded-full overflow-hidden border border-slate-800">
+                        <div
+                          className={`h-full rounded-full transition-all duration-500 ${
+                            isOptimal
+                              ? 'bg-gradient-to-r from-cyan-500 to-emerald-400 shadow-sm shadow-cyan-500/50'
+                              : isHighRate
+                              ? 'bg-gradient-to-r from-emerald-600 to-emerald-400'
+                              : isMediumRate
+                              ? 'bg-gradient-to-r from-cyan-600 to-cyan-400'
+                              : 'bg-gradient-to-r from-purple-600 to-slate-500'
+                          }`}
+                          style={{ width: `${Math.max(m.hitRatePercent, 2)}%` }}
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Smart Autonomous Mechanism Status Footer */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5 pt-1 text-[11px] font-sans">
+              <div className="bg-slate-900/60 p-2.5 rounded-lg border border-slate-800/80 flex items-start space-x-2">
+                <span className="text-base">🛡️</span>
+                <div>
+                  <span className="font-bold text-white">Breakeven Ratchet:</span>
+                  <p className="text-slate-400 text-[10px] leading-relaxed">
+                    At +20% unrealized gain, stop-loss ratchets to Entry + 3% to guarantee zero-loss exit.
+                  </p>
+                </div>
+              </div>
+
+              <div className="bg-slate-900/60 p-2.5 rounded-lg border border-slate-800/80 flex items-start space-x-2">
+                <span className="text-base">🎯</span>
+                <div>
+                  <span className="font-bold text-white">Dynamic Trailing Stop:</span>
+                  <p className="text-slate-400 text-[10px] leading-relaxed">
+                    At +30% gain, activates trailing stop 15% below peak to lock in breakout profits.
+                  </p>
+                </div>
+              </div>
+
+              <div className="bg-slate-900/60 p-2.5 rounded-lg border border-slate-800/80 flex items-start space-x-2">
+                <span className="text-base">⏱️</span>
+                <div>
+                  <span className="font-bold text-white">45m Anti-Churn Cooldown:</span>
+                  <p className="text-slate-400 text-[10px] leading-relaxed">
+                    Stopped-out tokens are blacklisted for 45 minutes to prevent re-entering dumping knives.
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div className="space-y-6">
       {/* Dual Engine Switcher Tabs */}
@@ -309,7 +538,7 @@ export function DemoTradingStudio({
           {copyPortfolio && (
             <div className="text-right">
               <div className="text-xs font-mono font-bold text-purple-300">${copyPortfolio.totalEquityUsd.toFixed(2)}</div>
-              <div className="text-[10px] font-mono text-slate-400">Bankroll: $100</div>
+              <div className="text-[10px] font-mono text-slate-400">Bankroll: ${copyPortfolio.startingCash || 1000}</div>
             </div>
           )}
         </button>
@@ -334,7 +563,7 @@ export function DemoTradingStudio({
           {gemPortfolio && (
             <div className="text-right">
               <div className="text-xs font-mono font-bold text-amber-300">${gemPortfolio.totalEquityUsd.toFixed(2)}</div>
-              <div className="text-[10px] font-mono text-slate-400">Bankroll: $100</div>
+              <div className="text-[10px] font-mono text-slate-400">Bankroll: ${gemPortfolio.startingCash || 1000}</div>
             </div>
           )}
         </button>
@@ -662,6 +891,9 @@ export function DemoTradingStudio({
       {/* Live Equity Curve */}
       {renderEquityCurve()}
 
+      {/* Profitability Milestone Ladder & Target Optimizer (MFE Analytics) */}
+      {renderProfitabilityMilestoneLadder()}
+
       {/* Tab Switcher: Active Positions vs Closed Trades History */}
       <div className="flex items-center justify-between border-b border-cyber-border/80 pb-2">
         <div className="flex items-center space-x-2">
@@ -793,12 +1025,27 @@ export function DemoTradingStudio({
                           >
                             ({pos.pnlPercent >= 0 ? '+' : ''}{pos.pnlPercent}%)
                           </div>
+                          {pos.peakPnlPercent !== undefined && pos.peakPnlPercent > 0 && (
+                            <div className="text-[10px] text-cyan-400 font-mono mt-0.5" title={`Peaked at $${pos.peakPriceUsd}`}>
+                              Peak: +{pos.peakPnlPercent.toFixed(1)}%
+                            </div>
+                          )}
                         </td>
-                        <td className="py-3 px-3.5 text-center text-[10px] space-y-0.5">
+                        <td className="py-3 px-3.5 text-center text-[10px] space-y-1">
                           <div className="text-emerald-400">TP: ${pos.takeProfitPrice1} (+100%)</div>
-                          <div className="text-rose-400">
-                            SL: ${pos.stopLossPrice} ({portfolio.stopLossPercent}%)
-                          </div>
+                          {pos.isTrailingActive ? (
+                            <div className="px-1.5 py-0.5 rounded bg-cyan-950/80 border border-cyan-500/50 text-cyan-300 font-bold inline-block">
+                              🎯 Trailing SL: ${pos.stopLossPrice}
+                            </div>
+                          ) : pos.isBreakevenProtected ? (
+                            <div className="px-1.5 py-0.5 rounded bg-indigo-950/80 border border-indigo-500/50 text-indigo-300 font-bold inline-block">
+                              🛡️ Breakeven SL: ${pos.stopLossPrice} (+3%)
+                            </div>
+                          ) : (
+                            <div className="text-rose-400">
+                              SL: ${pos.stopLossPrice} ({portfolio.stopLossPercent}%)
+                            </div>
+                          )}
                         </td>
                         <td className="py-3 px-3.5 text-right">
                           <button
@@ -1158,7 +1405,13 @@ export function DemoTradingStudio({
                                                     className={`px-1.5 py-0.2 rounded text-[9px] font-bold ${
                                                       trade.exitReason === 'TAKE_PROFIT'
                                                         ? 'bg-emerald-950 text-emerald-300 border border-emerald-500/40'
-                                                        : 'bg-rose-950 text-rose-300 border border-rose-500/40'
+                                                        : trade.exitReason === 'TRAILING_STOP'
+                                                        ? 'bg-cyan-950 text-cyan-300 border border-cyan-500/40'
+                                                        : trade.exitReason === 'BREAKEVEN_STOP'
+                                                        ? 'bg-indigo-950 text-indigo-300 border border-indigo-500/40'
+                                                        : trade.exitReason === 'STOP_LOSS'
+                                                        ? 'bg-rose-950 text-rose-300 border border-rose-500/40'
+                                                        : 'bg-amber-950 text-amber-300 border border-amber-500/40'
                                                     }`}
                                                   >
                                                     {trade.exitReason}
@@ -1408,6 +1661,10 @@ export function DemoTradingStudio({
                                   className={`px-2 py-0.5 rounded text-[10px] font-bold inline-flex items-center space-x-1 ${
                                     trade.exitReason === 'TAKE_PROFIT'
                                       ? 'bg-emerald-950/80 text-emerald-300 border border-emerald-500/40'
+                                      : trade.exitReason === 'TRAILING_STOP'
+                                      ? 'bg-cyan-950/80 text-cyan-300 border border-cyan-500/40'
+                                      : trade.exitReason === 'BREAKEVEN_STOP'
+                                      ? 'bg-indigo-950/80 text-indigo-300 border border-indigo-500/40'
                                       : trade.exitReason === 'STOP_LOSS'
                                       ? 'bg-rose-950/80 text-rose-300 border border-rose-500/40'
                                       : 'bg-amber-950/80 text-amber-300 border border-amber-500/40'
@@ -1415,6 +1672,11 @@ export function DemoTradingStudio({
                                 >
                                   <span>{trade.exitReason}</span>
                                 </span>
+                                {trade.peakPnlPercent !== undefined && trade.peakPnlPercent > 0 && (
+                                  <div className="text-[10px] text-cyan-400 font-mono mt-0.5" title={`Peaked at $${trade.peakPriceUsd}`}>
+                                    Peak MFE: +{trade.peakPnlPercent.toFixed(1)}%
+                                  </div>
+                                )}
                                 <div className="text-[10px] text-slate-400 font-sans mt-0.5 max-w-[180px] truncate" title={trade.exitReasonDetail}>
                                   {trade.exitReasonDetail}
                                 </div>
@@ -1477,6 +1739,8 @@ export function DemoTradingStudio({
                                         <div>Trigger: <strong className="text-white">{trade.exitReasonDetail}</strong></div>
                                         <div>Principal: ${trade.investedUsd.toFixed(2)} &rarr; Returned: ${trade.returnedUsd.toFixed(2)}</div>
                                         <div>Net Return: <strong className={isProfit ? 'text-emerald-400' : 'text-crimson'}>{isProfit ? '+' : ''}${trade.netPnlUsd.toFixed(2)} ({isProfit ? '+' : ''}{trade.netPnlPercent.toFixed(1)}%)</strong></div>
+                                        <div>Peak MFE: <strong className="text-cyan-400">+{trade.peakPnlPercent ? trade.peakPnlPercent.toFixed(1) : (trade.netPnlPercent > 0 ? trade.netPnlPercent.toFixed(1) : '0.0')}%</strong> (High: ${trade.peakPriceUsd ?? trade.exitPriceUsd})</div>
+                                        <div>Max Adverse (MAE): <strong className="text-rose-400">{trade.lowestPnlPercent ? trade.lowestPnlPercent.toFixed(1) : '0.0'}%</strong></div>
                                         <div>Gas Fee Deducted: ~${trade.simulatedGasFeeUsd || 0.02}</div>
                                       </div>
                                     </div>

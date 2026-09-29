@@ -4,6 +4,7 @@ import {
   DEFAULT_GEM_RADAR_PORTFOLIO,
   INITIAL_DECISION_LOGS,
   INITIAL_GEM_RADAR_LOGS,
+  calculateProfitLadderAnalytics,
 } from '@/lib/demo-trading-engine';
 import { DecisionLog, DemoClosedTrade, DemoPosition } from '@/lib/types';
 import { fetchSolanaTokenPrice } from '@/lib/solana/birdeye';
@@ -35,6 +36,14 @@ export async function GET(request: NextRequest) {
   const state = getBotState();
   const serverWorker = getServerWorkerStatus();
 
+  // Aggregate Profitability Milestone Ladder analytics across all trades & open positions
+  const allClosed = [
+    ...(state.copyBot.portfolio.closedTrades || []),
+    ...(state.gemRadarBot.portfolio.closedTrades || []),
+  ];
+  const allOpen = [...state.copyBot.positions, ...state.gemRadarBot.positions];
+  const profitLadder = calculateProfitLadderAnalytics(allClosed, allOpen);
+
   return NextResponse.json({
     success: true,
     // Default / Copy Bot payload (maintains backward compatibility)
@@ -44,6 +53,7 @@ export async function GET(request: NextRequest) {
     // Full Dual-Bot Engine payload
     copyBot: state.copyBot,
     gemRadarBot: state.gemRadarBot,
+    profitLadder,
     serverWorker,
     timestamp: Date.now(),
   });
@@ -63,6 +73,13 @@ export async function POST(request: NextRequest) {
       const updatedState = await executeBotTick();
       const serverWorker = getServerWorkerStatus();
 
+      const allClosed = [
+        ...(updatedState.copyBot.portfolio.closedTrades || []),
+        ...(updatedState.gemRadarBot.portfolio.closedTrades || []),
+      ];
+      const allOpen = [...updatedState.copyBot.positions, ...updatedState.gemRadarBot.positions];
+      const profitLadder = calculateProfitLadderAnalytics(allClosed, allOpen);
+
       return NextResponse.json({
         success: true,
         portfolio: botType === 'gem_radar' ? updatedState.gemRadarBot.portfolio : updatedState.copyBot.portfolio,
@@ -70,6 +87,7 @@ export async function POST(request: NextRequest) {
         logs: botType === 'gem_radar' ? updatedState.gemRadarBot.logs : updatedState.copyBot.logs,
         copyBot: updatedState.copyBot,
         gemRadarBot: updatedState.gemRadarBot,
+        profitLadder,
         serverWorker,
       });
     }
@@ -184,6 +202,11 @@ export async function POST(request: NextRequest) {
             multiplier: +(pos.currentPriceUsd / pos.entryPriceUsd).toFixed(2),
             exitReason: 'MANUAL_CLOSE',
             exitReasonDetail: `Manual Discretionary Exit at $${pos.currentPriceUsd} (${pos.pnlPercent >= 0 ? '+' : ''}${pos.pnlPercent}%)`,
+            peakPriceUsd: pos.peakPriceUsd ?? pos.entryPriceUsd,
+            peakPnlPercent: pos.peakPnlPercent ?? Math.max(0, pos.pnlPercent),
+            lowestPriceUsd: pos.lowestPriceUsd ?? pos.entryPriceUsd,
+            lowestPnlPercent: pos.lowestPnlPercent ?? Math.min(0, pos.pnlPercent),
+            profitMilestonesReached: pos.profitMilestonesReached || [],
             alphaScoreAtEntry: pos.alphaScoreAtEntry,
             entryRationale: pos.entryRationale,
             simulatedGasFeeUsd: 0.005,
@@ -221,10 +244,18 @@ export async function POST(request: NextRequest) {
         return { ...prevState };
       });
 
+      const allClosed = [
+        ...(nextState.copyBot.portfolio.closedTrades || []),
+        ...(nextState.gemRadarBot.portfolio.closedTrades || []),
+      ];
+      const allOpen = [...nextState.copyBot.positions, ...nextState.gemRadarBot.positions];
+      const profitLadder = calculateProfitLadderAnalytics(allClosed, allOpen);
+
       return NextResponse.json({
         success: closedSuccessfully,
         copyBot: nextState.copyBot,
         gemRadarBot: nextState.gemRadarBot,
+        profitLadder,
       });
     }
 
@@ -264,6 +295,13 @@ export async function POST(request: NextRequest) {
               entryRationale: `User triggered breakout snipe on ${signal.tokenSymbol}. Pattern: ${signal.patternTitle}.`,
               strategy: 'GEM_RADAR_BREAKOUT',
               gemPattern: signal.patternType,
+              peakPriceUsd: spotPrice,
+              peakPnlPercent: 0,
+              lowestPriceUsd: spotPrice,
+              lowestPnlPercent: 0,
+              profitMilestonesReached: [],
+              isBreakevenProtected: false,
+              isTrailingActive: false,
             };
 
             prevState.gemRadarBot.positions.push(newPos);
@@ -279,30 +317,38 @@ export async function POST(request: NextRequest) {
               action: `USER TRIGGERED GEM SNIPE: Invested $${allocation} into ${signal.tokenSymbol}`,
               rationale: `Manual trigger on Gem Radar signal: ${signal.patternTitle}. Live spot price: $${spotPrice}.`,
               improvementLessonTag: '[USER_GEM_SNIPE]',
-              improvementNote: 'Position added to Gem Radar Hunter portfolio with 2x TP / -20% SL triggers.',
+              improvementNote: 'Position added to Gem Radar Hunter portfolio with dynamic TP/SL and peak tracking.',
             });
           }
           return { ...prevState };
         });
 
+        const allClosed = [
+          ...(nextState.copyBot.portfolio.closedTrades || []),
+          ...(nextState.gemRadarBot.portfolio.closedTrades || []),
+        ];
+        const allOpen = [...nextState.copyBot.positions, ...nextState.gemRadarBot.positions];
+        const profitLadder = calculateProfitLadderAnalytics(allClosed, allOpen);
+
         return NextResponse.json({
           success: true,
           copyBot: nextState.copyBot,
           gemRadarBot: nextState.gemRadarBot,
+          profitLadder,
         });
       }
     }
 
-    // 6. Reset both to pristine clean slates
+    // 6. Reset both to pristine clean slates ($1,000 Starting Cash)
     if (action === 'reset') {
       const resetState: StoredBotState = {
         copyBot: {
-          portfolio: { ...DEFAULT_DEMO_PORTFOLIO, equityHistory: [{ timestamp: Date.now(), equityUsd: 100 }] },
+          portfolio: { ...DEFAULT_DEMO_PORTFOLIO, equityHistory: [{ timestamp: Date.now(), equityUsd: 1000 }] },
           positions: [],
           logs: [...INITIAL_DECISION_LOGS],
         },
         gemRadarBot: {
-          portfolio: { ...DEFAULT_GEM_RADAR_PORTFOLIO, equityHistory: [{ timestamp: Date.now(), equityUsd: 100 }] },
+          portfolio: { ...DEFAULT_GEM_RADAR_PORTFOLIO, equityHistory: [{ timestamp: Date.now(), equityUsd: 1000 }] },
           positions: [],
           logs: [...INITIAL_GEM_RADAR_LOGS],
         },
@@ -313,10 +359,18 @@ export async function POST(request: NextRequest) {
 
       const nextState = updateBotState(() => resetState);
 
+      const allClosed = [
+        ...(nextState.copyBot.portfolio.closedTrades || []),
+        ...(nextState.gemRadarBot.portfolio.closedTrades || []),
+      ];
+      const allOpen = [...nextState.copyBot.positions, ...nextState.gemRadarBot.positions];
+      const profitLadder = calculateProfitLadderAnalytics(allClosed, allOpen);
+
       return NextResponse.json({
         success: true,
         copyBot: nextState.copyBot,
         gemRadarBot: nextState.gemRadarBot,
+        profitLadder,
       });
     }
 

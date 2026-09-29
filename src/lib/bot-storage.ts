@@ -83,6 +83,21 @@ export function loadBotStateFromDisk(): StoredBotState {
       const raw = fs.readFileSync(targetFile, 'utf-8');
       const parsed = JSON.parse(raw);
       if (parsed && parsed.copyBot && parsed.gemRadarBot) {
+        // Upgrade stored demo state: uncap limits to $1,000 capital and 25 concurrent slots
+        for (const bot of [parsed.copyBot, parsed.gemRadarBot]) {
+          if (bot && bot.portfolio) {
+            if (!bot.portfolio.maxConcurrentPositions || bot.portfolio.maxConcurrentPositions < 25) {
+              bot.portfolio.maxConcurrentPositions = 25;
+            }
+            if (!bot.portfolio.startingCash || bot.portfolio.startingCash < 1000) {
+              const diff = 1000 - (bot.portfolio.startingCash || 100);
+              bot.portfolio.startingCash = 1000;
+              bot.portfolio.currentCash = +((bot.portfolio.currentCash || 0) + diff).toFixed(2);
+              bot.portfolio.totalDemoCapitalLoaded = +((bot.portfolio.totalDemoCapitalLoaded || 0) + diff).toFixed(2);
+              bot.portfolio.totalEquityUsd = +((bot.portfolio.totalEquityUsd || 0) + diff).toFixed(2);
+            }
+          }
+        }
         memoryState = parsed;
         return memoryState!;
       }

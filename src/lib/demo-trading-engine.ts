@@ -1,4 +1,17 @@
-import { ChainId, DecisionLog, DemoClosedTrade, DemoPortfolio, DemoPosition, PeriodicPnlSummary, PreBreakoutGemSignal, Token, Trade, WalletProfile } from './types';
+import {
+  ChainId,
+  DecisionLog,
+  DemoClosedTrade,
+  DemoPortfolio,
+  DemoPosition,
+  MilestoneRate,
+  PeriodicPnlSummary,
+  PreBreakoutGemSignal,
+  ProfitLadderAnalytics,
+  Token,
+  Trade,
+  WalletProfile,
+} from './types';
 import { SEED_WALLETS } from './wallet-engine';
 import { fetchSolanaTokenPrice } from './solana/birdeye';
 import { checkWalletTokenHolding, fetchWalletOnChainSwaps } from './solana/helius';
@@ -8,24 +21,53 @@ import { detectPreBreakoutGemSignals } from './solana/gem-radar';
 export const INITIAL_CLOSED_TRADES: DemoClosedTrade[] = [];
 export const INITIAL_OPEN_POSITIONS: DemoPosition[] = [];
 
-// Portfolio 1: Smart Money Copy-Trade Bot ($100 Starting Cash)
+// 45-minute post-stop-loss cooldown to prevent catching falling knives / re-entry churn
+const STOP_LOSS_COOLDOWN_MS = 45 * 60 * 1000;
+export const tokenStopLossCooldownMap = new Map<string, number>();
+
+export function registerStopLossCooldown(tokenAddress: string): void {
+  tokenStopLossCooldownMap.set(tokenAddress, Date.now() + STOP_LOSS_COOLDOWN_MS);
+}
+
+export function isTokenInStopLossCooldown(tokenAddress: string): { inCooldown: boolean; remainingMinutes: number } {
+  const expiry = tokenStopLossCooldownMap.get(tokenAddress);
+  if (!expiry) return { inCooldown: false, remainingMinutes: 0 };
+  const diff = expiry - Date.now();
+  if (diff <= 0) {
+    tokenStopLossCooldownMap.delete(tokenAddress);
+    return { inCooldown: false, remainingMinutes: 0 };
+  }
+  return { inCooldown: true, remainingMinutes: Math.ceil(diff / 60000) };
+}
+
+// Standard MFE Profit Milestones for pattern analysis and optimal target discovery
+export const STANDARD_PROFIT_MILESTONES = [
+  { percent: 15, label: '+15% Move' },
+  { percent: 30, label: '+30% Momentum' },
+  { percent: 50, label: '+50% Surge' },
+  { percent: 75, label: '+75% Expansion' },
+  { percent: 100, label: '+100% (2x Double)' },
+  { percent: 200, label: '+200% (3x Runner)' },
+];
+
+// Portfolio 1: Smart Money Copy-Trade Bot ($1,000 Starting Cash, 25 Concurrent Positions)
 export const DEFAULT_DEMO_PORTFOLIO: DemoPortfolio = {
-  startingCash: 100.00,
-  currentCash: 100.00,
+  startingCash: 1000.00,
+  currentCash: 1000.00,
   investedInPositionsUsd: 0.00,
-  totalEquityUsd: 100.00,
+  totalEquityUsd: 1000.00,
   totalRealizedPnlUsd: 0.00,
   totalUnrealizedPnlUsd: 0.00,
   totalWins: 0,
   totalLosses: 0,
   winRate: 0,
   reloadCount: 0,
-  totalDemoCapitalLoaded: 100.00,
+  totalDemoCapitalLoaded: 1000.00,
   isAutoReloadEnabled: true,
   isBotRunning: true,
   minConvictionThreshold: 80,
   allocationPerTradeUsd: 20,
-  maxConcurrentPositions: 4,
+  maxConcurrentPositions: 25,
   stopLossPercent: -20,
   takeProfitTargets: [
     { targetMultiplier: 2.0, sellPercent: 50 },
@@ -33,29 +75,29 @@ export const DEFAULT_DEMO_PORTFOLIO: DemoPortfolio = {
     { targetMultiplier: 10.0, sellPercent: 20 },
   ],
   equityHistory: [
-    { timestamp: Date.now(), equityUsd: 100.00 },
+    { timestamp: Date.now(), equityUsd: 1000.00 },
   ],
   closedTrades: [],
 };
 
-// Portfolio 2: Gem Radar Breakout Hunter Bot ($100 Starting Cash)
+// Portfolio 2: Gem Radar Breakout Hunter Bot ($1,000 Starting Cash, 25 Concurrent Positions)
 export const DEFAULT_GEM_RADAR_PORTFOLIO: DemoPortfolio = {
-  startingCash: 100.00,
-  currentCash: 100.00,
+  startingCash: 1000.00,
+  currentCash: 1000.00,
   investedInPositionsUsd: 0.00,
-  totalEquityUsd: 100.00,
+  totalEquityUsd: 1000.00,
   totalRealizedPnlUsd: 0.00,
   totalUnrealizedPnlUsd: 0.00,
   totalWins: 0,
   totalLosses: 0,
   winRate: 0,
   reloadCount: 0,
-  totalDemoCapitalLoaded: 100.00,
+  totalDemoCapitalLoaded: 1000.00,
   isAutoReloadEnabled: true,
   isBotRunning: true,
   minConvictionThreshold: 80,
   allocationPerTradeUsd: 20,
-  maxConcurrentPositions: 4,
+  maxConcurrentPositions: 25,
   stopLossPercent: -20,
   takeProfitTargets: [
     { targetMultiplier: 2.0, sellPercent: 50 },
@@ -63,7 +105,7 @@ export const DEFAULT_GEM_RADAR_PORTFOLIO: DemoPortfolio = {
     { targetMultiplier: 10.0, sellPercent: 20 },
   ],
   equityHistory: [
-    { timestamp: Date.now(), equityUsd: 100.00 },
+    { timestamp: Date.now(), equityUsd: 1000.00 },
   ],
   closedTrades: [],
 };
@@ -351,7 +393,124 @@ export function filterTradesByTimeframe(
 }
 
 // ==========================================
-// Bot Engine 1: Smart Money Copy-Trading Engine ($100 Bankroll)
+// Profitability Milestone & Peak Tracking Engine (MFE)
+// ==========================================
+
+export function updatePositionPeakAndMilestones(
+  pos: DemoPosition,
+  newPrice: number,
+  newPnlPercent: number
+): void {
+  // Peak Price & PnL (Maximum Favorable Excursion)
+  const currentPeakPrice = pos.peakPriceUsd ?? pos.entryPriceUsd;
+  if (newPrice > currentPeakPrice) {
+    pos.peakPriceUsd = newPrice;
+  }
+  const currentPeakPnl = pos.peakPnlPercent ?? 0;
+  if (newPnlPercent > currentPeakPnl) {
+    pos.peakPnlPercent = newPnlPercent;
+  }
+
+  // Lowest Price & PnL (Maximum Adverse Excursion)
+  const currentLowestPrice = pos.lowestPriceUsd ?? pos.entryPriceUsd;
+  if (newPrice < currentLowestPrice) {
+    pos.lowestPriceUsd = newPrice;
+  }
+  const currentLowestPnl = pos.lowestPnlPercent ?? 0;
+  if (newPnlPercent < currentLowestPnl) {
+    pos.lowestPnlPercent = newPnlPercent;
+  }
+
+  // Record Milestones Reached
+  if (!pos.profitMilestonesReached) {
+    pos.profitMilestonesReached = [];
+  }
+  for (const m of STANDARD_PROFIT_MILESTONES) {
+    if ((pos.peakPnlPercent ?? 0) >= m.percent && !pos.profitMilestonesReached.includes(m.percent)) {
+      pos.profitMilestonesReached.push(m.percent);
+    }
+  }
+}
+
+export function calculateProfitLadderAnalytics(
+  trades: DemoClosedTrade[],
+  positions: DemoPosition[]
+): ProfitLadderAnalytics {
+  const evaluatedItems: Array<{ peakPnl: number; isWin: boolean; finalPnl: number }> = [];
+
+  for (const t of trades) {
+    const peak = t.peakPnlPercent !== undefined ? t.peakPnlPercent : Math.max(t.netPnlPercent, 0);
+    evaluatedItems.push({
+      peakPnl: peak,
+      isWin: t.netPnlUsd > 0,
+      finalPnl: t.netPnlPercent,
+    });
+  }
+
+  for (const p of positions) {
+    if (p.status === 'OPEN') {
+      const peak = p.peakPnlPercent !== undefined ? p.peakPnlPercent : Math.max(p.pnlPercent, 0);
+      evaluatedItems.push({
+        peakPnl: peak,
+        isWin: p.pnlPercent > 0,
+        finalPnl: p.pnlPercent,
+      });
+    }
+  }
+
+  const totalEvaluated = evaluatedItems.length;
+
+  const milestones: MilestoneRate[] = STANDARD_PROFIT_MILESTONES.map((m) => {
+    const hitCount = evaluatedItems.filter((item) => item.peakPnl >= m.percent).length;
+    const hitRatePercent = totalEvaluated > 0 ? +((hitCount / totalEvaluated) * 100).toFixed(1) : 0;
+    return {
+      milestonePercent: m.percent,
+      label: m.label,
+      hitCount,
+      totalEvaluated,
+      hitRatePercent,
+    };
+  });
+
+  const allPeaks = evaluatedItems.map((i) => i.peakPnl);
+  const avgPeakPnlAllPercent =
+    allPeaks.length > 0 ? +(allPeaks.reduce((a, b) => a + b, 0) / allPeaks.length).toFixed(1) : 0;
+
+  const winnerPeaks = evaluatedItems.filter((i) => i.isWin).map((i) => i.peakPnl);
+  const avgPeakPnlWinnersPercent =
+    winnerPeaks.length > 0 ? +(winnerPeaks.reduce((a, b) => a + b, 0) / winnerPeaks.length).toFixed(1) : 0;
+
+  const lossPeaks = evaluatedItems.filter((i) => !i.isWin).map((i) => i.peakPnl);
+  const avgPeakPnlLossesPercent =
+    lossPeaks.length > 0 ? +(lossPeaks.reduce((a, b) => a + b, 0) / lossPeaks.length).toFixed(1) : 0;
+
+  const tradesReversingAfterProfitCount = evaluatedItems.filter(
+    (i) => i.peakPnl >= 15 && i.finalPnl <= 0
+  ).length;
+
+  let optimalTarget = 30;
+  let bestEv = 0;
+  for (const m of milestones) {
+    const ev = (m.hitRatePercent / 100) * m.milestonePercent;
+    if (ev > bestEv && m.hitRatePercent >= 25) {
+      bestEv = ev;
+      optimalTarget = m.milestonePercent;
+    }
+  }
+
+  return {
+    totalTradesTracked: totalEvaluated,
+    milestones,
+    avgPeakPnlAllPercent,
+    avgPeakPnlWinnersPercent,
+    avgPeakPnlLossesPercent,
+    optimalTakeProfitTargetPercent: optimalTarget,
+    tradesReversingAfterProfitCount,
+  };
+}
+
+// ==========================================
+// Bot Engine 1: Smart Money Copy-Trading Engine ($1,000 Bankroll, 25 Slots)
 // Evaluates strictly real on-chain BUY swaps from Helius within last 15 min,
 // verifies open token holding on-chain, and checks spot price slippage.
 // ==========================================
@@ -380,7 +539,7 @@ export async function runCopyBotTick(
   const updatedPositions: DemoPosition[] = [];
   const updatedClosedTrades: DemoClosedTrade[] = [...(closedTradesInput || portfolio.closedTrades || [])];
 
-  // 1. Evaluate Open Positions against real live spot prices
+  // 1. Evaluate Open Positions against real live spot prices with Dynamic Trailing Stop & Breakeven Ratchet
   for (const pos of positions) {
     if (pos.status === 'CLOSED') continue;
 
@@ -389,7 +548,34 @@ export async function runCopyBotTick(
     const newPnlUsd = +((newPrice - pos.entryPriceUsd) * pos.tokenAmount).toFixed(2);
     const newPnlPercent = +(((newPrice - pos.entryPriceUsd) / pos.entryPriceUsd) * 100).toFixed(1);
 
-    // Take Profit Trigger
+    // Update Peak & Lowest MFE Metrics
+    updatePositionPeakAndMilestones(pos, newPrice, newPnlPercent);
+
+    // Dynamic Rule 1: Breakeven Stop Ratchet
+    // When peak PnL reaches >= +20%, move stop loss to Entry + 3% (guarantees net positive after gas)
+    if ((pos.peakPnlPercent ?? 0) >= 20) {
+      pos.isBreakevenProtected = true;
+      const breakevenStop = +(pos.entryPriceUsd * 1.03).toFixed(6);
+      if (pos.stopLossPrice < breakevenStop) {
+        pos.stopLossPrice = breakevenStop;
+      }
+    }
+
+    // Dynamic Rule 2: Trailing Stop Activation
+    // When peak PnL reaches >= +30%, activate a dynamic trailing stop 15% below peak
+    if ((pos.peakPnlPercent ?? 0) >= 30) {
+      pos.isTrailingActive = true;
+      const peakPrice = pos.peakPriceUsd || newPrice;
+      const dynamicTrailingStop = +(peakPrice * 0.85).toFixed(6);
+      if (!pos.trailingStopPrice || dynamicTrailingStop > pos.trailingStopPrice) {
+        pos.trailingStopPrice = dynamicTrailingStop;
+      }
+      if (pos.stopLossPrice < pos.trailingStopPrice) {
+        pos.stopLossPrice = pos.trailingStopPrice;
+      }
+    }
+
+    // Trigger A: Full Take-Profit Target Hit (2.0x Double)
     if (newPrice >= pos.takeProfitPrice1) {
       const totalReturned = +(pos.investedUsd + newPnlUsd).toFixed(2);
       cash = +(cash + totalReturned).toFixed(2);
@@ -416,6 +602,11 @@ export async function runCopyBotTick(
         multiplier: +(newPrice / pos.entryPriceUsd).toFixed(2),
         exitReason: 'TAKE_PROFIT',
         exitReasonDetail: `Take-Profit Target Hit (+${newPnlPercent}%) at live spot $${newPrice}`,
+        peakPriceUsd: pos.peakPriceUsd ?? pos.entryPriceUsd,
+        peakPnlPercent: pos.peakPnlPercent ?? Math.max(0, newPnlPercent),
+        lowestPriceUsd: pos.lowestPriceUsd ?? pos.entryPriceUsd,
+        lowestPnlPercent: pos.lowestPnlPercent ?? Math.min(0, newPnlPercent),
+        profitMilestonesReached: pos.profitMilestonesReached || [],
         alphaScoreAtEntry: pos.alphaScoreAtEntry,
         entryRationale: pos.entryRationale,
         simulatedGasFeeUsd: 0.005,
@@ -433,21 +624,140 @@ export async function runCopyBotTick(
         triggeredByWalletLabel: pos.copiedFromWalletLabel,
         convictionScore: pos.alphaScoreAtEntry,
         action: `TAKE PROFIT (+${newPnlPercent}%) - Closed ${pos.tokenSymbol} at $${newPrice}`,
-        rationale: `Automated Take-Profit triggered at target $${pos.takeProfitPrice1}. Capital returned: $${totalReturned}. Net P&L: +$${newPnlUsd}.`,
+        rationale: `Automated Take-Profit triggered at target $${pos.takeProfitPrice1}. Capital returned: $${totalReturned}. Net P&L: +$${newPnlUsd}. Peak reached: +${pos.peakPnlPercent}%.`,
         outcomePnlUsd: newPnlUsd,
         outcomePnlPercent: newPnlPercent,
         improvementLessonTag: '[WIN: TAKE_PROFIT]',
-        improvementNote: 'Disciplined exit locked in gains mechanically.',
+        improvementNote: 'Disciplined exit locked in maximum target gains mechanically.',
       });
       continue;
     }
 
-    // Stop Loss Trigger
+    // Trigger B: Dynamic Trailing Stop Hit (Locked In Gains)
+    if (pos.isTrailingActive && newPrice <= pos.stopLossPrice) {
+      const totalReturned = +(pos.investedUsd + newPnlUsd).toFixed(2);
+      cash = +(cash + Math.max(0, totalReturned)).toFixed(2);
+      realizedPnl = +(realizedPnl + newPnlUsd).toFixed(2);
+      if (newPnlUsd >= 0) wins++; else losses++;
+
+      const closedRecord: DemoClosedTrade = {
+        id: `closed-copy-${Date.now()}-${Math.random().toString(36).substring(7)}`,
+        tokenAddress: pos.tokenAddress,
+        tokenSymbol: pos.tokenSymbol,
+        tokenName: pos.tokenName,
+        chain: 'solana',
+        copiedFromWallet: pos.copiedFromWallet,
+        copiedFromWalletLabel: pos.copiedFromWalletLabel,
+        entryTimestamp: pos.entryTimestamp,
+        exitTimestamp: Date.now(),
+        holdDurationSeconds: Math.max(1, Math.round((Date.now() - pos.entryTimestamp) / 1000)),
+        entryPriceUsd: pos.entryPriceUsd,
+        exitPriceUsd: newPrice,
+        investedUsd: pos.investedUsd,
+        returnedUsd: Math.max(0, totalReturned),
+        netPnlUsd: newPnlUsd,
+        netPnlPercent: newPnlPercent,
+        multiplier: +(newPrice / pos.entryPriceUsd).toFixed(2),
+        exitReason: 'TRAILING_STOP',
+        exitReasonDetail: `Trailing Stop Triggered (+${newPnlPercent}%) - Locked in gains after peak +${pos.peakPnlPercent}%`,
+        peakPriceUsd: pos.peakPriceUsd ?? pos.entryPriceUsd,
+        peakPnlPercent: pos.peakPnlPercent ?? Math.max(0, newPnlPercent),
+        lowestPriceUsd: pos.lowestPriceUsd ?? pos.entryPriceUsd,
+        lowestPnlPercent: pos.lowestPnlPercent ?? Math.min(0, newPnlPercent),
+        profitMilestonesReached: pos.profitMilestonesReached || [],
+        alphaScoreAtEntry: pos.alphaScoreAtEntry,
+        entryRationale: pos.entryRationale,
+        simulatedGasFeeUsd: 0.005,
+      };
+      updatedClosedTrades.unshift(closedRecord);
+
+      newLogs.unshift({
+        id: `log-trail-${Date.now()}`,
+        timestamp: Date.now(),
+        type: 'EXIT_TAKE_PROFIT',
+        tokenSymbol: pos.tokenSymbol,
+        tokenAddress: pos.tokenAddress,
+        chain: 'solana',
+        triggeredByWallet: pos.copiedFromWallet,
+        triggeredByWalletLabel: pos.copiedFromWalletLabel,
+        convictionScore: pos.alphaScoreAtEntry,
+        action: `TRAILING STOP (+${newPnlPercent}%) - Closed ${pos.tokenSymbol} at $${newPrice}`,
+        rationale: `Dynamic trailing stop locked in profit after peak reached +${pos.peakPnlPercent}%. Prevented profit round-trip into loss. Net P&L: +$${newPnlUsd}.`,
+        outcomePnlUsd: newPnlUsd,
+        outcomePnlPercent: newPnlPercent,
+        improvementLessonTag: '[WIN: TRAILING_STOP_PROTECTION]',
+        improvementNote: 'Dynamic trailing stop protected accumulated unrealized gains.',
+      });
+      continue;
+    }
+
+    // Trigger C: Breakeven Stop Hit (Protected Capital)
+    if (pos.isBreakevenProtected && newPrice <= pos.stopLossPrice) {
+      const totalReturned = +(pos.investedUsd + newPnlUsd).toFixed(2);
+      cash = +(cash + Math.max(0, totalReturned)).toFixed(2);
+      realizedPnl = +(realizedPnl + newPnlUsd).toFixed(2);
+      if (newPnlUsd >= 0) wins++; else losses++;
+
+      const closedRecord: DemoClosedTrade = {
+        id: `closed-copy-${Date.now()}-${Math.random().toString(36).substring(7)}`,
+        tokenAddress: pos.tokenAddress,
+        tokenSymbol: pos.tokenSymbol,
+        tokenName: pos.tokenName,
+        chain: 'solana',
+        copiedFromWallet: pos.copiedFromWallet,
+        copiedFromWalletLabel: pos.copiedFromWalletLabel,
+        entryTimestamp: pos.entryTimestamp,
+        exitTimestamp: Date.now(),
+        holdDurationSeconds: Math.max(1, Math.round((Date.now() - pos.entryTimestamp) / 1000)),
+        entryPriceUsd: pos.entryPriceUsd,
+        exitPriceUsd: newPrice,
+        investedUsd: pos.investedUsd,
+        returnedUsd: Math.max(0, totalReturned),
+        netPnlUsd: newPnlUsd,
+        netPnlPercent: newPnlPercent,
+        multiplier: +(newPrice / pos.entryPriceUsd).toFixed(2),
+        exitReason: 'BREAKEVEN_STOP',
+        exitReasonDetail: `Breakeven Stop Triggered (+${newPnlPercent}%) - Preserved capital after peak +${pos.peakPnlPercent}%`,
+        peakPriceUsd: pos.peakPriceUsd ?? pos.entryPriceUsd,
+        peakPnlPercent: pos.peakPnlPercent ?? Math.max(0, newPnlPercent),
+        lowestPriceUsd: pos.lowestPriceUsd ?? pos.entryPriceUsd,
+        lowestPnlPercent: pos.lowestPnlPercent ?? Math.min(0, newPnlPercent),
+        profitMilestonesReached: pos.profitMilestonesReached || [],
+        alphaScoreAtEntry: pos.alphaScoreAtEntry,
+        entryRationale: pos.entryRationale,
+        simulatedGasFeeUsd: 0.005,
+      };
+      updatedClosedTrades.unshift(closedRecord);
+
+      newLogs.unshift({
+        id: `log-be-${Date.now()}`,
+        timestamp: Date.now(),
+        type: 'EXIT_TAKE_PROFIT',
+        tokenSymbol: pos.tokenSymbol,
+        tokenAddress: pos.tokenAddress,
+        chain: 'solana',
+        triggeredByWallet: pos.copiedFromWallet,
+        triggeredByWalletLabel: pos.copiedFromWalletLabel,
+        convictionScore: pos.alphaScoreAtEntry,
+        action: `BREAKEVEN STOP (+${newPnlPercent}%) - Closed ${pos.tokenSymbol} at $${newPrice}`,
+        rationale: `Capital preserved at breakeven after initial pump to +${pos.peakPnlPercent}%. Prevented falling back to a loss.`,
+        outcomePnlUsd: newPnlUsd,
+        outcomePnlPercent: newPnlPercent,
+        improvementLessonTag: '[BREAKEVEN_PROTECTION]',
+        improvementNote: 'Capital defended: trade closed without taking a loss.',
+      });
+      continue;
+    }
+
+    // Trigger D: Hard Stop Loss Cut
     if (newPrice <= pos.stopLossPrice) {
       const totalReturned = +(pos.investedUsd + newPnlUsd).toFixed(2);
       cash = +(cash + Math.max(0, totalReturned)).toFixed(2);
       realizedPnl = +(realizedPnl + newPnlUsd).toFixed(2);
       losses++;
+
+      // Register 45-minute anti-churn cooldown for this token
+      registerStopLossCooldown(pos.tokenAddress);
 
       const closedRecord: DemoClosedTrade = {
         id: `closed-copy-${Date.now()}-${Math.random().toString(36).substring(7)}`,
@@ -468,7 +778,12 @@ export async function runCopyBotTick(
         netPnlPercent: newPnlPercent,
         multiplier: +(newPrice / pos.entryPriceUsd).toFixed(2),
         exitReason: 'STOP_LOSS',
-        exitReasonDetail: `Stop-Loss Triggered (${newPnlPercent}%) at live spot $${newPrice}`,
+        exitReasonDetail: `Hard Stop-Loss Triggered (${newPnlPercent}%) at live spot $${newPrice}`,
+        peakPriceUsd: pos.peakPriceUsd ?? pos.entryPriceUsd,
+        peakPnlPercent: pos.peakPnlPercent ?? Math.max(0, newPnlPercent),
+        lowestPriceUsd: pos.lowestPriceUsd ?? pos.entryPriceUsd,
+        lowestPnlPercent: pos.lowestPnlPercent ?? Math.min(0, newPnlPercent),
+        profitMilestonesReached: pos.profitMilestonesReached || [],
         alphaScoreAtEntry: pos.alphaScoreAtEntry,
         entryRationale: pos.entryRationale,
         simulatedGasFeeUsd: 0.005,
@@ -486,11 +801,11 @@ export async function runCopyBotTick(
         triggeredByWalletLabel: pos.copiedFromWalletLabel,
         convictionScore: pos.alphaScoreAtEntry,
         action: `STOP LOSS HIT (${newPnlPercent}%) - Closed ${pos.tokenSymbol} at $${newPrice}`,
-        rationale: `Automated Stop-Loss triggered below threshold ($${pos.stopLossPrice}). Capital preserved by cutting loss at -$${Math.abs(newPnlUsd)}.`,
+        rationale: `Automated Stop-Loss triggered below threshold ($${pos.stopLossPrice}). Token placed on 45m anti-churn cooldown to prevent buying falling knife. Net Loss: -$${Math.abs(newPnlUsd)}.`,
         outcomePnlUsd: newPnlUsd,
         outcomePnlPercent: newPnlPercent,
         improvementLessonTag: '[LOSS: STOP_LOSS_PROTECTION]',
-        improvementNote: 'Capital preserved against severe drawdown.',
+        improvementNote: 'Capital preserved against catastrophic drawdown. Cooldown activated.',
       });
       continue;
     }
@@ -500,6 +815,15 @@ export async function runCopyBotTick(
       currentPriceUsd: newPrice,
       pnlUsd: newPnlUsd,
       pnlPercent: newPnlPercent,
+      peakPriceUsd: pos.peakPriceUsd,
+      peakPnlPercent: pos.peakPnlPercent,
+      lowestPriceUsd: pos.lowestPriceUsd,
+      lowestPnlPercent: pos.lowestPnlPercent,
+      profitMilestonesReached: pos.profitMilestonesReached,
+      trailingStopPrice: pos.trailingStopPrice,
+      isTrailingActive: pos.isTrailingActive,
+      isBreakevenProtected: pos.isBreakevenProtected,
+      stopLossPrice: pos.stopLossPrice,
     });
   }
 
@@ -523,6 +847,27 @@ export async function runCopyBotTick(
         if (freshBuy) {
           const alreadyHolding = updatedPositions.some((p) => p.tokenAddress === freshBuy.tokenAddress);
           if (alreadyHolding) continue;
+
+          // Anti-Churn Stop-Loss Cooldown Check
+          const cooldownCheck = isTokenInStopLossCooldown(freshBuy.tokenAddress);
+          if (cooldownCheck.inCooldown) {
+            newLogs.unshift({
+              id: `log-skip-cooldown-${Date.now()}`,
+              timestamp: Date.now(),
+              type: 'EVALUATION_REJECT',
+              tokenSymbol: freshBuy.tokenSymbol,
+              tokenAddress: freshBuy.tokenAddress,
+              chain: 'solana',
+              triggeredByWallet: wallet.address,
+              triggeredByWalletLabel: wallet.label,
+              convictionScore: 25,
+              action: `SKIPPED ${freshBuy.tokenSymbol}: Anti-Churn Cooldown Active (${cooldownCheck.remainingMinutes}m remaining)`,
+              rationale: `Token recently triggered hard stop-loss. Blacklisted for 45 minutes to prevent re-entering a falling knife / dumping momentum.`,
+              improvementLessonTag: '[ANTI_CHURN_COOLDOWN]',
+              improvementNote: 'Capital protected from repetitive churn losses.',
+            });
+            continue;
+          }
 
           // Check on-chain holding via Helius RPC
           const holdingStatus = await checkWalletTokenHolding(wallet.address, freshBuy.tokenAddress);
@@ -603,6 +948,13 @@ export async function runCopyBotTick(
               strategy: 'WHALE_COPY',
               verifiedWhaleHolding: true,
               whaleEntryTimestamp: freshBuy.timestamp,
+              peakPriceUsd: spotPrice,
+              peakPnlPercent: 0,
+              lowestPriceUsd: spotPrice,
+              lowestPnlPercent: 0,
+              profitMilestonesReached: [],
+              isBreakevenProtected: false,
+              isTrailingActive: false,
             };
 
             updatedPositions.push(newPos);
@@ -700,7 +1052,7 @@ export async function runGemRadarBotTick(
   const updatedPositions: DemoPosition[] = [];
   const updatedClosedTrades: DemoClosedTrade[] = [...(closedTradesInput || portfolio.closedTrades || [])];
 
-  // 1. Evaluate Open Positions against real live spot prices
+  // 1. Evaluate Open Positions against real live spot prices with Dynamic Trailing Stop & Breakeven Ratchet
   for (const pos of positions) {
     if (pos.status === 'CLOSED') continue;
 
@@ -709,7 +1061,34 @@ export async function runGemRadarBotTick(
     const newPnlUsd = +((newPrice - pos.entryPriceUsd) * pos.tokenAmount).toFixed(2);
     const newPnlPercent = +(((newPrice - pos.entryPriceUsd) / pos.entryPriceUsd) * 100).toFixed(1);
 
-    // Take Profit Trigger
+    // Update Peak & Lowest MFE Metrics
+    updatePositionPeakAndMilestones(pos, newPrice, newPnlPercent);
+
+    // Dynamic Rule 1: Breakeven Stop Ratchet
+    // When peak PnL reaches >= +20%, move stop loss to Entry + 3% (guarantees net positive after gas)
+    if ((pos.peakPnlPercent ?? 0) >= 20) {
+      pos.isBreakevenProtected = true;
+      const breakevenStop = +(pos.entryPriceUsd * 1.03).toFixed(6);
+      if (pos.stopLossPrice < breakevenStop) {
+        pos.stopLossPrice = breakevenStop;
+      }
+    }
+
+    // Dynamic Rule 2: Trailing Stop Activation
+    // When peak PnL reaches >= +30%, activate a dynamic trailing stop 15% below peak
+    if ((pos.peakPnlPercent ?? 0) >= 30) {
+      pos.isTrailingActive = true;
+      const peakPrice = pos.peakPriceUsd || newPrice;
+      const dynamicTrailingStop = +(peakPrice * 0.85).toFixed(6);
+      if (!pos.trailingStopPrice || dynamicTrailingStop > pos.trailingStopPrice) {
+        pos.trailingStopPrice = dynamicTrailingStop;
+      }
+      if (pos.stopLossPrice < pos.trailingStopPrice) {
+        pos.stopLossPrice = pos.trailingStopPrice;
+      }
+    }
+
+    // Trigger A: Full Take-Profit Target Hit (2.0x Double)
     if (newPrice >= pos.takeProfitPrice1) {
       const totalReturned = +(pos.investedUsd + newPnlUsd).toFixed(2);
       cash = +(cash + totalReturned).toFixed(2);
@@ -736,6 +1115,11 @@ export async function runGemRadarBotTick(
         multiplier: +(newPrice / pos.entryPriceUsd).toFixed(2),
         exitReason: 'TAKE_PROFIT',
         exitReasonDetail: `Take-Profit Target Hit (+${newPnlPercent}%) on Gem Radar Breakout at $${newPrice}`,
+        peakPriceUsd: pos.peakPriceUsd ?? pos.entryPriceUsd,
+        peakPnlPercent: pos.peakPnlPercent ?? Math.max(0, newPnlPercent),
+        lowestPriceUsd: pos.lowestPriceUsd ?? pos.entryPriceUsd,
+        lowestPnlPercent: pos.lowestPnlPercent ?? Math.min(0, newPnlPercent),
+        profitMilestonesReached: pos.profitMilestonesReached || [],
         alphaScoreAtEntry: pos.alphaScoreAtEntry,
         entryRationale: pos.entryRationale,
         simulatedGasFeeUsd: 0.005,
@@ -751,21 +1135,136 @@ export async function runGemRadarBotTick(
         chain: 'solana',
         convictionScore: pos.alphaScoreAtEntry,
         action: `TAKE PROFIT (+${newPnlPercent}%) - Sold Gem Radar breakout ${pos.tokenSymbol} at $${newPrice}`,
-        rationale: `Automated Take-Profit triggered at target $${pos.takeProfitPrice1}. Capital returned: $${totalReturned}. Net P&L: +$${newPnlUsd}.`,
+        rationale: `Automated Take-Profit triggered at target $${pos.takeProfitPrice1}. Capital returned: $${totalReturned}. Net P&L: +$${newPnlUsd}. Peak reached: +${pos.peakPnlPercent}%.`,
         outcomePnlUsd: newPnlUsd,
         outcomePnlPercent: newPnlPercent,
         improvementLessonTag: '[WIN: GEM_BREAKOUT_TP]',
-        improvementNote: 'Locked in breakout gains mechanically.',
+        improvementNote: 'Locked in breakout gains mechanically at peak double.',
       });
       continue;
     }
 
-    // Stop Loss Trigger
+    // Trigger B: Dynamic Trailing Stop Hit (Locked In Gains)
+    if (pos.isTrailingActive && newPrice <= pos.stopLossPrice) {
+      const totalReturned = +(pos.investedUsd + newPnlUsd).toFixed(2);
+      cash = +(cash + Math.max(0, totalReturned)).toFixed(2);
+      realizedPnl = +(realizedPnl + newPnlUsd).toFixed(2);
+      if (newPnlUsd >= 0) wins++; else losses++;
+
+      const closedRecord: DemoClosedTrade = {
+        id: `closed-gem-${Date.now()}-${Math.random().toString(36).substring(7)}`,
+        tokenAddress: pos.tokenAddress,
+        tokenSymbol: pos.tokenSymbol,
+        tokenName: pos.tokenName,
+        chain: 'solana',
+        copiedFromWallet: pos.copiedFromWallet,
+        copiedFromWalletLabel: 'Gem Radar Velocity Breakout',
+        entryTimestamp: pos.entryTimestamp,
+        exitTimestamp: Date.now(),
+        holdDurationSeconds: Math.max(1, Math.round((Date.now() - pos.entryTimestamp) / 1000)),
+        entryPriceUsd: pos.entryPriceUsd,
+        exitPriceUsd: newPrice,
+        investedUsd: pos.investedUsd,
+        returnedUsd: Math.max(0, totalReturned),
+        netPnlUsd: newPnlUsd,
+        netPnlPercent: newPnlPercent,
+        multiplier: +(newPrice / pos.entryPriceUsd).toFixed(2),
+        exitReason: 'TRAILING_STOP',
+        exitReasonDetail: `Trailing Stop Triggered (+${newPnlPercent}%) on Gem Breakout - Locked in gains after peak +${pos.peakPnlPercent}%`,
+        peakPriceUsd: pos.peakPriceUsd ?? pos.entryPriceUsd,
+        peakPnlPercent: pos.peakPnlPercent ?? Math.max(0, newPnlPercent),
+        lowestPriceUsd: pos.lowestPriceUsd ?? pos.entryPriceUsd,
+        lowestPnlPercent: pos.lowestPnlPercent ?? Math.min(0, newPnlPercent),
+        profitMilestonesReached: pos.profitMilestonesReached || [],
+        alphaScoreAtEntry: pos.alphaScoreAtEntry,
+        entryRationale: pos.entryRationale,
+        simulatedGasFeeUsd: 0.005,
+      };
+      updatedClosedTrades.unshift(closedRecord);
+
+      newLogs.unshift({
+        id: `log-gem-trail-${Date.now()}`,
+        timestamp: Date.now(),
+        type: 'EXIT_TAKE_PROFIT',
+        tokenSymbol: pos.tokenSymbol,
+        tokenAddress: pos.tokenAddress,
+        chain: 'solana',
+        convictionScore: pos.alphaScoreAtEntry,
+        action: `TRAILING STOP (+${newPnlPercent}%) - Closed Gem ${pos.tokenSymbol} at $${newPrice}`,
+        rationale: `Dynamic trailing stop locked in profit after breakout peaked at +${pos.peakPnlPercent}%. Prevented profit round-trip into loss. Net P&L: +$${newPnlUsd}.`,
+        outcomePnlUsd: newPnlUsd,
+        outcomePnlPercent: newPnlPercent,
+        improvementLessonTag: '[WIN: GEM_TRAILING_PROTECTION]',
+        improvementNote: 'Dynamic trailing stop protected accumulated unrealized gains from post-breakout pullback.',
+      });
+      continue;
+    }
+
+    // Trigger C: Breakeven Stop Hit (Protected Capital)
+    if (pos.isBreakevenProtected && newPrice <= pos.stopLossPrice) {
+      const totalReturned = +(pos.investedUsd + newPnlUsd).toFixed(2);
+      cash = +(cash + Math.max(0, totalReturned)).toFixed(2);
+      realizedPnl = +(realizedPnl + newPnlUsd).toFixed(2);
+      if (newPnlUsd >= 0) wins++; else losses++;
+
+      const closedRecord: DemoClosedTrade = {
+        id: `closed-gem-${Date.now()}-${Math.random().toString(36).substring(7)}`,
+        tokenAddress: pos.tokenAddress,
+        tokenSymbol: pos.tokenSymbol,
+        tokenName: pos.tokenName,
+        chain: 'solana',
+        copiedFromWallet: pos.copiedFromWallet,
+        copiedFromWalletLabel: 'Gem Radar Velocity Breakout',
+        entryTimestamp: pos.entryTimestamp,
+        exitTimestamp: Date.now(),
+        holdDurationSeconds: Math.max(1, Math.round((Date.now() - pos.entryTimestamp) / 1000)),
+        entryPriceUsd: pos.entryPriceUsd,
+        exitPriceUsd: newPrice,
+        investedUsd: pos.investedUsd,
+        returnedUsd: Math.max(0, totalReturned),
+        netPnlUsd: newPnlUsd,
+        netPnlPercent: newPnlPercent,
+        multiplier: +(newPrice / pos.entryPriceUsd).toFixed(2),
+        exitReason: 'BREAKEVEN_STOP',
+        exitReasonDetail: `Breakeven Stop Triggered (+${newPnlPercent}%) on Gem Breakout - Preserved capital after peak +${pos.peakPnlPercent}%`,
+        peakPriceUsd: pos.peakPriceUsd ?? pos.entryPriceUsd,
+        peakPnlPercent: pos.peakPnlPercent ?? Math.max(0, newPnlPercent),
+        lowestPriceUsd: pos.lowestPriceUsd ?? pos.entryPriceUsd,
+        lowestPnlPercent: pos.lowestPnlPercent ?? Math.min(0, newPnlPercent),
+        profitMilestonesReached: pos.profitMilestonesReached || [],
+        alphaScoreAtEntry: pos.alphaScoreAtEntry,
+        entryRationale: pos.entryRationale,
+        simulatedGasFeeUsd: 0.005,
+      };
+      updatedClosedTrades.unshift(closedRecord);
+
+      newLogs.unshift({
+        id: `log-gem-be-${Date.now()}`,
+        timestamp: Date.now(),
+        type: 'EXIT_TAKE_PROFIT',
+        tokenSymbol: pos.tokenSymbol,
+        tokenAddress: pos.tokenAddress,
+        chain: 'solana',
+        convictionScore: pos.alphaScoreAtEntry,
+        action: `BREAKEVEN STOP (+${newPnlPercent}%) - Closed Gem ${pos.tokenSymbol} at $${newPrice}`,
+        rationale: `Capital preserved at breakeven after initial pump to +${pos.peakPnlPercent}%. Prevented falling back to a loss.`,
+        outcomePnlUsd: newPnlUsd,
+        outcomePnlPercent: newPnlPercent,
+        improvementLessonTag: '[BREAKEVEN_PROTECTION]',
+        improvementNote: 'Capital defended: trade closed without taking a loss.',
+      });
+      continue;
+    }
+
+    // Trigger D: Hard Stop Loss Cut
     if (newPrice <= pos.stopLossPrice) {
       const totalReturned = +(pos.investedUsd + newPnlUsd).toFixed(2);
       cash = +(cash + Math.max(0, totalReturned)).toFixed(2);
       realizedPnl = +(realizedPnl + newPnlUsd).toFixed(2);
       losses++;
+
+      // Register 45-minute anti-churn cooldown for this token
+      registerStopLossCooldown(pos.tokenAddress);
 
       const closedRecord: DemoClosedTrade = {
         id: `closed-gem-${Date.now()}-${Math.random().toString(36).substring(7)}`,
@@ -787,6 +1286,11 @@ export async function runGemRadarBotTick(
         multiplier: +(newPrice / pos.entryPriceUsd).toFixed(2),
         exitReason: 'STOP_LOSS',
         exitReasonDetail: `Hard Stop-Loss Cut (${newPnlPercent}%) on Gem Radar breakout at $${newPrice}`,
+        peakPriceUsd: pos.peakPriceUsd ?? pos.entryPriceUsd,
+        peakPnlPercent: pos.peakPnlPercent ?? Math.max(0, newPnlPercent),
+        lowestPriceUsd: pos.lowestPriceUsd ?? pos.entryPriceUsd,
+        lowestPnlPercent: pos.lowestPnlPercent ?? Math.min(0, newPnlPercent),
+        profitMilestonesReached: pos.profitMilestonesReached || [],
         alphaScoreAtEntry: pos.alphaScoreAtEntry,
         entryRationale: pos.entryRationale,
         simulatedGasFeeUsd: 0.005,
@@ -802,11 +1306,11 @@ export async function runGemRadarBotTick(
         chain: 'solana',
         convictionScore: pos.alphaScoreAtEntry,
         action: `STOP LOSS HIT (${newPnlPercent}%) - Cut Gem ${pos.tokenSymbol} at $${newPrice}`,
-        rationale: `Automated Stop-Loss triggered below threshold ($${pos.stopLossPrice}). Capital preserved by cutting loss at -$${Math.abs(newPnlUsd)}.`,
+        rationale: `Automated Stop-Loss triggered below threshold ($${pos.stopLossPrice}). Placed on 45m anti-churn cooldown to prevent re-entering falling knife. Net Loss: -$${Math.abs(newPnlUsd)}.`,
         outcomePnlUsd: newPnlUsd,
         outcomePnlPercent: newPnlPercent,
         improvementLessonTag: '[LOSS: GEM_BREAKOUT_STOP]',
-        improvementNote: 'Capital protected from post-breakout pullback.',
+        improvementNote: 'Capital protected from post-breakout pullback. Cooldown activated.',
       });
       continue;
     }
@@ -816,6 +1320,15 @@ export async function runGemRadarBotTick(
       currentPriceUsd: newPrice,
       pnlUsd: newPnlUsd,
       pnlPercent: newPnlPercent,
+      peakPriceUsd: pos.peakPriceUsd,
+      peakPnlPercent: pos.peakPnlPercent,
+      lowestPriceUsd: pos.lowestPriceUsd,
+      lowestPnlPercent: pos.lowestPnlPercent,
+      profitMilestonesReached: pos.profitMilestonesReached,
+      trailingStopPrice: pos.trailingStopPrice,
+      isTrailingActive: pos.isTrailingActive,
+      isBreakevenProtected: pos.isBreakevenProtected,
+      stopLossPrice: pos.stopLossPrice,
     });
   }
 
@@ -830,6 +1343,25 @@ export async function runGemRadarBotTick(
 
         const alreadyHolding = updatedPositions.some((p) => p.tokenAddress === sig.tokenAddress);
         if (alreadyHolding) continue;
+
+        // Anti-Churn Stop-Loss Cooldown Check
+        const cooldownCheck = isTokenInStopLossCooldown(sig.tokenAddress);
+        if (cooldownCheck.inCooldown) {
+          newLogs.unshift({
+            id: `log-gem-skip-cooldown-${Date.now()}`,
+            timestamp: Date.now(),
+            type: 'EVALUATION_REJECT',
+            tokenSymbol: sig.tokenSymbol,
+            tokenAddress: sig.tokenAddress,
+            chain: 'solana',
+            convictionScore: 25,
+            action: `SKIPPED ${sig.tokenSymbol}: Anti-Churn Cooldown Active (${cooldownCheck.remainingMinutes}m remaining)`,
+            rationale: `Token recently triggered stop-loss. Blacklisted for 45 minutes to prevent re-entering a dumping breakout.`,
+            improvementLessonTag: '[ANTI_CHURN_COOLDOWN]',
+            improvementNote: 'Capital protected from repetitive churn losses.',
+          });
+          continue;
+        }
 
         // Entry criteria: Confidence >= 80, liquidity depth >= $10k, valid spot price
         if (sig.confidenceScore >= 80 && sig.liquidityUsd >= 10000 && sig.priceUsd > 0) {
@@ -861,6 +1393,13 @@ export async function runGemRadarBotTick(
             entryRationale: `Sniped live Gem Radar breakout: ${sig.patternTitle}. 5m Volume: $${Math.round(sig.volume5mUsd).toLocaleString()}, Liquidity: $${Math.round(sig.liquidityUsd).toLocaleString()}.`,
             strategy: 'GEM_RADAR_BREAKOUT',
             gemPattern: sig.patternType,
+            peakPriceUsd: spotPrice,
+            peakPnlPercent: 0,
+            lowestPriceUsd: spotPrice,
+            lowestPnlPercent: 0,
+            profitMilestonesReached: [],
+            isBreakevenProtected: false,
+            isTrailingActive: false,
           };
 
           updatedPositions.push(newPos);
@@ -876,7 +1415,7 @@ export async function runGemRadarBotTick(
             action: `ENTERED ${sig.tokenSymbol} (GEM RADAR BREAKOUT): $${allocation} at spot $${spotPrice}`,
             rationale: `Live Gem Radar setup verified: ${sig.patternTitle}. ${sig.patternDescription}`,
             improvementLessonTag: '[WIN_OPPORTUNITY: GEM_RADAR_BREAKOUT]',
-            improvementNote: 'Sniped live breakout momentum with strict 2x TP and -20% SL protection.',
+            improvementNote: 'Sniped live breakout momentum with dynamic trailing stop and breakeven protection.',
           });
         }
       }

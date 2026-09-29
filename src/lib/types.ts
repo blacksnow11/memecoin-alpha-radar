@@ -141,6 +141,17 @@ export interface DemoPosition {
   takeProfitPrice1: number;
   takeProfitPrice2: number;
   stopLossPrice: number;
+  // Dynamic Trailing & Peak Tracking
+  peakPriceUsd?: number;
+  peakPnlPercent?: number;
+  lowestPriceUsd?: number;
+  lowestPnlPercent?: number;
+  trailingStopPrice?: number;
+  isTrailingActive?: boolean;
+  isBreakevenProtected?: boolean;
+  profitMilestonesReached?: number[];
+  partialProfitTakenUsd?: number;
+  remainingTokens?: number;
   status: 'OPEN' | 'CLOSED';
   exitTimestamp?: number;
   exitPriceUsd?: number;
@@ -173,12 +184,36 @@ export interface DemoClosedTrade {
   netPnlUsd: number;
   netPnlPercent: number;
   multiplier: number; // e.g. 2.0x, 0.8x
-  exitReason: 'TAKE_PROFIT' | 'STOP_LOSS' | 'MANUAL_CLOSE' | 'TRAILING_STOP';
+  exitReason: 'TAKE_PROFIT' | 'STOP_LOSS' | 'MANUAL_CLOSE' | 'TRAILING_STOP' | 'BREAKEVEN_STOP';
   exitReasonDetail: string;
+  // Maximum Favorable Excursion (MFE) Peak Analytics
+  peakPriceUsd?: number;
+  peakPnlPercent?: number;
+  lowestPriceUsd?: number;
+  lowestPnlPercent?: number;
+  profitMilestonesReached?: number[];
   alphaScoreAtEntry: number;
   entryRationale: string;
   txHash?: string;
   simulatedGasFeeUsd: number;
+}
+
+export interface MilestoneRate {
+  milestonePercent: number; // 15, 30, 50, 75, 100, 200
+  label: string;
+  hitCount: number;
+  totalEvaluated: number;
+  hitRatePercent: number;
+}
+
+export interface ProfitLadderAnalytics {
+  totalTradesTracked: number;
+  milestones: MilestoneRate[];
+  avgPeakPnlAllPercent: number;
+  avgPeakPnlWinnersPercent: number;
+  avgPeakPnlLossesPercent: number;
+  optimalTakeProfitTargetPercent: number;
+  tradesReversingAfterProfitCount: number;
 }
 
 export interface PeriodicPnlSummary {
