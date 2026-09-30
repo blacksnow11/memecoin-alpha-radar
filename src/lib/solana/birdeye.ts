@@ -9,8 +9,22 @@ interface CachedPrice {
   priceUsd: number;
   priceChange24h: number;
   liquidityUsd?: number;
+  marketCapUsd?: number;
+  volume5m?: number;
+  volume1h?: number;
   pairAddress?: string;
   timestamp: number;
+}
+
+export interface TokenPriceResult {
+  priceUsd: number;
+  priceChange24h: number;
+  liquidityUsd?: number;
+  marketCapUsd?: number;
+  volume5m?: number;
+  volume1h?: number;
+  pairAddress?: string;
+  source: 'birdeye' | 'dexscreener' | 'cache';
 }
 
 // In-memory 15-second cache for token prices
@@ -20,7 +34,7 @@ const CACHE_TTL_MS = 15000; // 15 seconds
 export async function fetchSolanaTokenPrice(
   mintAddress: string,
   pairAddress?: string
-): Promise<{ priceUsd: number; priceChange24h: number; liquidityUsd?: number; pairAddress?: string; source: 'birdeye' | 'dexscreener' | 'cache' }> {
+): Promise<TokenPriceResult> {
   const now = Date.now();
   const cacheKey = pairAddress ? `${mintAddress}:${pairAddress}` : mintAddress;
 
@@ -30,6 +44,9 @@ export async function fetchSolanaTokenPrice(
       priceUsd: priceCache[cacheKey].priceUsd,
       priceChange24h: priceCache[cacheKey].priceChange24h,
       liquidityUsd: priceCache[cacheKey].liquidityUsd,
+      marketCapUsd: priceCache[cacheKey].marketCapUsd,
+      volume5m: priceCache[cacheKey].volume5m,
+      volume1h: priceCache[cacheKey].volume1h,
       pairAddress: priceCache[cacheKey].pairAddress,
       source: 'cache',
     };
@@ -53,6 +70,9 @@ export async function fetchSolanaTokenPrice(
         const priceUsd = data.data.value;
         const priceChange24h = data.data.priceChange24h || 0;
         const existingLiquidity = priceCache[cacheKey]?.liquidityUsd || priceCache[mintAddress]?.liquidityUsd;
+        const existingMarketCap = priceCache[cacheKey]?.marketCapUsd || priceCache[mintAddress]?.marketCapUsd;
+        const existingVol5m = priceCache[cacheKey]?.volume5m || priceCache[mintAddress]?.volume5m;
+        const existingVol1h = priceCache[cacheKey]?.volume1h || priceCache[mintAddress]?.volume1h;
         const existingPair = priceCache[cacheKey]?.pairAddress || priceCache[mintAddress]?.pairAddress || pairAddress;
 
         // Save to cache
@@ -60,18 +80,30 @@ export async function fetchSolanaTokenPrice(
           priceUsd,
           priceChange24h,
           liquidityUsd: existingLiquidity,
+          marketCapUsd: existingMarketCap,
+          volume5m: existingVol5m,
+          volume1h: existingVol1h,
           pairAddress: existingPair,
           timestamp: now,
         };
 
-        return { priceUsd, priceChange24h, liquidityUsd: existingLiquidity, pairAddress: existingPair, source: 'birdeye' };
+        return {
+          priceUsd,
+          priceChange24h,
+          liquidityUsd: existingLiquidity,
+          marketCapUsd: existingMarketCap,
+          volume5m: existingVol5m,
+          volume1h: existingVol1h,
+          pairAddress: existingPair,
+          source: 'birdeye',
+        };
       }
     }
   } catch (err) {
     console.warn(`[Birdeye] Fetch price failed for ${mintAddress}, falling back to DexScreener:`, err);
   }
 
-  // 3. Fallback to live DexScreener Solana endpoint (provides real-time liquidityUsd & pool details)
+  // 3. Fallback to live DexScreener Solana endpoint (provides real-time liquidityUsd, volume & pool details)
   try {
     const dsRes = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${mintAddress}`);
     if (dsRes.ok) {
@@ -93,17 +125,32 @@ export async function fetchSolanaTokenPrice(
         const priceUsd = parseFloat(solPair.priceUsd);
         const priceChange24h = solPair.priceChange?.h24 || 0;
         const liquidityUsd = solPair.liquidity?.usd;
+        const marketCapUsd = solPair.marketCap || solPair.fdv;
+        const volume5m = solPair.volume?.m5;
+        const volume1h = solPair.volume?.h1;
         const resolvedPairAddress = solPair.pairAddress || pairAddress;
 
         priceCache[cacheKey] = {
           priceUsd,
           priceChange24h,
           liquidityUsd,
+          marketCapUsd,
+          volume5m,
+          volume1h,
           pairAddress: resolvedPairAddress,
           timestamp: now,
         };
 
-        return { priceUsd, priceChange24h, liquidityUsd, pairAddress: resolvedPairAddress, source: 'dexscreener' };
+        return {
+          priceUsd,
+          priceChange24h,
+          liquidityUsd,
+          marketCapUsd,
+          volume5m,
+          volume1h,
+          pairAddress: resolvedPairAddress,
+          source: 'dexscreener',
+        };
       }
     }
   } catch (dsErr) {
@@ -116,6 +163,9 @@ export async function fetchSolanaTokenPrice(
     priceUsd: fallback,
     priceChange24h: 0,
     liquidityUsd: priceCache[cacheKey]?.liquidityUsd || priceCache[mintAddress]?.liquidityUsd,
+    marketCapUsd: priceCache[cacheKey]?.marketCapUsd || priceCache[mintAddress]?.marketCapUsd,
+    volume5m: priceCache[cacheKey]?.volume5m || priceCache[mintAddress]?.volume5m,
+    volume1h: priceCache[cacheKey]?.volume1h || priceCache[mintAddress]?.volume1h,
     pairAddress: priceCache[cacheKey]?.pairAddress || pairAddress,
     source: 'cache',
   };
