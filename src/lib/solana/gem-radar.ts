@@ -24,11 +24,15 @@ export async function detectPreBreakoutGemSignals(): Promise<PreBreakoutGemSigna
     // Strict Entry Guard 1: Reject hyper-fragile pools with < $15k liquidity to prevent flash rug vulnerability
     if (liquidity < 15000) continue;
 
-    // Strict Entry Guard 2: Market Cap Ceiling (max $30M) - Filters out mega-caps (BOME, MEW, CHILLGUY, ai16z) that cause stagnation churn
+    // Strict Entry Guard 2: Market Cap Ceiling (max $30M) - Filters out mega-caps (BOME, MEW, CHILLGUY) that cause stagnation churn
     if (token.marketCap > 30000000) continue;
 
     // Strict Entry Guard 3: Liquidity Pool Ceiling (max $350k) - Focuses on price-elastic pools that can actually pump +35% in minutes
     if (liquidity > 350000) continue;
+
+    // Strict Entry Guard 4: Active Trading Velocity Floor - Rejects dead/abandoned zombie pools with zero volume
+    if (volume5m < 500 && volume1h < 3000) continue;
+    if ((token.buyers24h || 0) + (token.sellers24h || 0) < 20) continue;
 
     const buyers = token.buyers24h || 0;
     const sellers = token.sellers24h || 1;
@@ -79,8 +83,8 @@ export async function detectPreBreakoutGemSignals(): Promise<PreBreakoutGemSigna
       continue;
     }
 
-    // Pattern 2: Ground-Floor Micro-Cap Discovery (< $10M MCap with active liquidity and healthy buy pressure)
-    if (token.marketCap > 0 && token.marketCap < 10000000 && liquidity >= 15000 && buyRatio >= 1.0) {
+    // Pattern 2: Ground-Floor Micro-Cap Discovery (< $10M MCap with active volume and healthy buy pressure)
+    if (token.marketCap > 0 && token.marketCap < 10000000 && liquidity >= 15000 && volume5m >= 500 && volume1h >= 2500 && buyRatio >= 1.0) {
       const liquidityRatio = +((liquidity / token.marketCap) * 100).toFixed(1);
       const groundScore = Math.min(95, Math.round(72 + (liquidityRatio > 10 ? 12 : 5) + (token.priceChange24h > 0 ? 8 : 0)));
 
@@ -99,7 +103,7 @@ export async function detectPreBreakoutGemSignals(): Promise<PreBreakoutGemSigna
         breakoutProbability: groundScore,
         patternType: 'GROUND_FLOOR_ACCUMULATION',
         patternTitle: `Ground-Floor Liquidity Depth (${liquidityRatio}% Liq-to-MCap)`,
-        patternDescription: `Sub-$10M market cap with $${Math.round(liquidity).toLocaleString()} pool backing and active DEX swaps. Early accumulation phase.`,
+        patternDescription: `Sub-$10M market cap with $${Math.round(liquidity).toLocaleString()} pool backing, $${Math.round(volume5m).toLocaleString()} 5m volume, and active DEX swaps.`,
         smartWalletsDetected,
         entryWindow: 'EARLY_ACCUMULATION',
         suggestedDemoAllocationUsd: 20,
@@ -111,8 +115,8 @@ export async function detectPreBreakoutGemSignals(): Promise<PreBreakoutGemSigna
       continue;
     }
 
-    // Pattern 3: Fresh Pump.fun Migration Momentum
-    if (token.isPumpFun && buyRatio >= 1.0) {
+    // Pattern 3: Fresh Pump.fun Migration Momentum with Active Trading
+    if (token.isPumpFun && (volume5m >= 500 || volume1h >= 2500) && buyRatio >= 1.0) {
       const pumpScore = Math.min(94, Math.round(78 + (token.priceChange24h > 0 ? 10 : 2)));
       signals.push({
         id: `sig-pump-${token.symbol.toLowerCase()}-${token.address.slice(0, 6)}`,
@@ -129,7 +133,7 @@ export async function detectPreBreakoutGemSignals(): Promise<PreBreakoutGemSigna
         breakoutProbability: pumpScore,
         patternType: 'PUMP_BONDING_BREAKOUT',
         patternTitle: `Pump.fun Graduated Pool Momentum (+${token.priceChange24h}% 24h)`,
-        patternDescription: `Graduated bonding curve pool migrating liquidity to Raydium CPMM with continuous buyer volume.`,
+        patternDescription: `Graduated bonding curve pool migrating liquidity to Raydium CPMM with continuous buyer volume ($${Math.round(volume5m).toLocaleString()} in 5m).`,
         smartWalletsDetected,
         entryWindow: 'OPTIMAL_DIP',
         suggestedDemoAllocationUsd: 20,

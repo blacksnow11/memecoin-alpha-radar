@@ -2,8 +2,9 @@
 // Rate Limit: 10 req/sec, 1M credits per month.
 // Built with strict request pacing, exponential backoff, and in-memory TTL caching.
 
-const HELIUS_API_KEY = process.env.HELIUS_API_KEY || 'f7d85eb1-a07a-4d5f-bbcf-9bb6a859b28a';
+const HELIUS_API_KEY = process.env.HELIUS_API_KEY || '6cd58ff6-f2ed-43d8-b648-3db0726a6d5c';
 const HELIUS_RPC_URL = `https://mainnet.helius-rpc.com/?api-key=${HELIUS_API_KEY}`;
+const PUBLIC_SOLANA_RPC = 'https://api.mainnet-beta.solana.com';
 const HELIUS_API_URL = 'https://api.helius.xyz/v0';
 
 export interface OnChainSwap {
@@ -84,7 +85,7 @@ export async function fetchWalletOnChainSwaps(
     if (!Array.isArray(txs)) return cached ? cached.data : [];
 
     const swaps = txs.map((tx) => parseHeliusSwap(tx, walletAddress)).filter(Boolean) as OnChainSwap[];
-    swapsCache.set(walletAddress, { data: swaps, expiry: now + 45000 }); // 45s TTL
+    swapsCache.set(walletAddress, { data: swaps, expiry: now + 90000 }); // 90s TTL to conserve credits
     return swaps;
   } catch (err) {
     return cached ? cached.data : [];
@@ -115,7 +116,7 @@ export async function fetchLivePumpFunSwaps(limit = 10): Promise<OnChainSwap[]> 
       .map((tx) => parseHeliusSwap(tx, tx.feePayer))
       .filter(Boolean) as OnChainSwap[];
 
-    pumpVaultCache = { data: parsed, expiry: now + 25000 }; // 25s TTL
+    pumpVaultCache = { data: parsed, expiry: now + 45000 }; // 45s TTL to conserve credits
     return parsed;
   } catch (err) {
     return pumpVaultCache ? pumpVaultCache.data : [];
@@ -134,7 +135,7 @@ export async function checkWalletTokenHolding(
   }
 
   try {
-    const res = await rateLimitedHeliusFetch(HELIUS_RPC_URL, {
+    let res = await rateLimitedHeliusFetch(HELIUS_RPC_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -149,6 +150,24 @@ export async function checkWalletTokenHolding(
       }),
     });
 
+    if (!res.ok) {
+      // Failover to public Solana RPC
+      res = await fetch(PUBLIC_SOLANA_RPC, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'getTokenAccountsByOwner',
+          params: [
+            walletAddress,
+            { mint: tokenMint },
+            { encoding: 'jsonParsed' }
+          ],
+        }),
+      });
+    }
+
     if (res.ok) {
       const data = await res.json();
       const accounts = data.result?.value;
@@ -159,7 +178,7 @@ export async function checkWalletTokenHolding(
           isHolding: uiAmount > 0,
           tokenBalance: uiAmount,
         };
-        holdingCache.set(cacheKey, { data: result, expiry: now + 35000 });
+        holdingCache.set(cacheKey, { data: result, expiry: now + 60000 });
         return result;
       }
     }
@@ -168,7 +187,7 @@ export async function checkWalletTokenHolding(
   }
 
   const defaultResult = { isHolding: false, tokenBalance: 0 };
-  holdingCache.set(cacheKey, { data: defaultResult, expiry: now + 15000 });
+  holdingCache.set(cacheKey, { data: defaultResult, expiry: now + 20000 });
   return defaultResult;
 }
 

@@ -1,8 +1,8 @@
 // Automated Verification Script for 100% Real Solana Data & APIs
 // Checks Birdeye, Helius, Wallet Engine, and Demo Trading Engine
 
-const HELIUS_KEY = process.env.HELIUS_API_KEY || 'f7d85eb1-a07a-4d5f-bbcf-9bb6a859b28a';
-const BIRDEYE_KEY = process.env.BIRDEYE_API_KEY || '05415e07972549ab93bba08c3c906519';
+const HELIUS_KEY = process.env.HELIUS_API_KEY || '6cd58ff6-f2ed-43d8-b648-3db0726a6d5c';
+const BIRDEYE_KEY = process.env.BIRDEYE_API_KEY || '53aff172dddf45c395c4481ee23d6e26';
 
 async function main() {
   console.log('====================================================');

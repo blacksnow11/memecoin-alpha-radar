@@ -4,7 +4,7 @@
 
 import { Token } from '../types';
 
-const BIRDEYE_API_KEY = process.env.BIRDEYE_API_KEY || '05415e07972549ab93bba08c3c906519';
+const BIRDEYE_API_KEY = process.env.BIRDEYE_API_KEY || '53aff172dddf45c395c4481ee23d6e26';
 const BIRDEYE_BASE_URL = 'https://public-api.birdeye.so';
 
 export interface SolanaUniverseToken extends Token {

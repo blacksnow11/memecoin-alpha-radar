@@ -40,6 +40,25 @@ export function isTokenInStopLossCooldown(tokenAddress: string): { inCooldown: b
   return { inCooldown: true, remainingMinutes: Math.ceil(diff / 60000) };
 }
 
+// 60-minute post-take-profit cooldown to prevent FOMO top-buying after a successful pump
+const TAKE_PROFIT_COOLDOWN_MS = 60 * 60 * 1000;
+export const tokenTakeProfitCooldownMap = new Map<string, number>();
+
+export function registerTakeProfitCooldown(tokenAddress: string): void {
+  tokenTakeProfitCooldownMap.set(tokenAddress, Date.now() + TAKE_PROFIT_COOLDOWN_MS);
+}
+
+export function isTokenInTakeProfitCooldown(tokenAddress: string): { inCooldown: boolean; remainingMinutes: number } {
+  const expiry = tokenTakeProfitCooldownMap.get(tokenAddress);
+  if (!expiry) return { inCooldown: false, remainingMinutes: 0 };
+  const diff = expiry - Date.now();
+  if (diff <= 0) {
+    tokenTakeProfitCooldownMap.delete(tokenAddress);
+    return { inCooldown: false, remainingMinutes: 0 };
+  }
+  return { inCooldown: true, remainingMinutes: Math.ceil(diff / 60000) };
+}
+
 // Standard MFE Profit Milestones for pattern analysis and optimal target discovery
 export const STANDARD_PROFIT_MILESTONES = [
   { percent: 15, label: '+15% Move' },
@@ -724,6 +743,7 @@ export async function runCopyBotTick(
 
     // Trigger A: Full Take-Profit Target Hit (Calibrated 1.35x / +35% Sweet Spot)
     if (newPrice >= pos.takeProfitPrice1) {
+      registerTakeProfitCooldown(pos.tokenAddress);
       const totalReturned = +(pos.investedUsd + newPnlUsd).toFixed(2);
       cash = +(cash + totalReturned).toFixed(2);
       realizedPnl = +(realizedPnl + newPnlUsd).toFixed(2);
@@ -772,17 +792,18 @@ export async function runCopyBotTick(
         triggeredByWalletLabel: pos.copiedFromWalletLabel,
         convictionScore: pos.alphaScoreAtEntry,
         action: `TAKE PROFIT (+${newPnlPercent}%) - Closed ${pos.tokenSymbol} at $${newPrice}`,
-        rationale: `Automated Take-Profit triggered at target $${pos.takeProfitPrice1}. Capital returned: $${totalReturned}. Net P&L: +$${newPnlUsd}. Peak reached: +${pos.peakPnlPercent}%.`,
+        rationale: `Automated Take-Profit triggered at target $${pos.takeProfitPrice1}. Capital returned: $${totalReturned}. Net P&L: +$${newPnlUsd}. Peak reached: +${pos.peakPnlPercent}%. Placed on 60m anti-top cooldown.`,
         outcomePnlUsd: newPnlUsd,
         outcomePnlPercent: newPnlPercent,
         improvementLessonTag: '[WIN: TAKE_PROFIT]',
-        improvementNote: 'Disciplined exit locked in maximum target gains mechanically.',
+        improvementNote: 'Disciplined exit locked in maximum target gains mechanically. Anti-top FOMO cooldown active.',
       });
       continue;
     }
 
     // Trigger B: Dynamic Trailing Stop Hit (Locked In Gains)
     if (pos.isTrailingActive && newPrice <= pos.stopLossPrice) {
+      registerTakeProfitCooldown(pos.tokenAddress);
       const totalReturned = +(pos.investedUsd + newPnlUsd).toFixed(2);
       cash = +(cash + Math.max(0, totalReturned)).toFixed(2);
       realizedPnl = +(realizedPnl + newPnlUsd).toFixed(2);
@@ -831,17 +852,18 @@ export async function runCopyBotTick(
         triggeredByWalletLabel: pos.copiedFromWalletLabel,
         convictionScore: pos.alphaScoreAtEntry,
         action: `TRAILING STOP (+${newPnlPercent}%) - Closed ${pos.tokenSymbol} at $${newPrice}`,
-        rationale: `Dynamic trailing stop locked in profit after peak reached +${pos.peakPnlPercent}%. Prevented profit round-trip into loss. Net P&L: +$${newPnlUsd}.`,
+        rationale: `Dynamic trailing stop locked in profit after peak reached +${pos.peakPnlPercent}%. Prevented profit round-trip into loss. Net P&L: +$${newPnlUsd}. Placed on 60m anti-top cooldown.`,
         outcomePnlUsd: newPnlUsd,
         outcomePnlPercent: newPnlPercent,
         improvementLessonTag: '[WIN: TRAILING_STOP_PROTECTION]',
-        improvementNote: 'Dynamic trailing stop protected accumulated unrealized gains.',
+        improvementNote: 'Dynamic trailing stop protected accumulated unrealized gains. Anti-top FOMO cooldown active.',
       });
       continue;
     }
 
     // Trigger C: Breakeven Stop Hit (Protected Capital)
     if (pos.isBreakevenProtected && newPrice <= pos.stopLossPrice) {
+      registerTakeProfitCooldown(pos.tokenAddress);
       const totalReturned = +(pos.investedUsd + newPnlUsd).toFixed(2);
       cash = +(cash + Math.max(0, totalReturned)).toFixed(2);
       realizedPnl = +(realizedPnl + newPnlUsd).toFixed(2);
@@ -890,11 +912,11 @@ export async function runCopyBotTick(
         triggeredByWalletLabel: pos.copiedFromWalletLabel,
         convictionScore: pos.alphaScoreAtEntry,
         action: `BREAKEVEN STOP (+${newPnlPercent}%) - Closed ${pos.tokenSymbol} at $${newPrice}`,
-        rationale: `Capital preserved at breakeven after initial pump to +${pos.peakPnlPercent}%. Prevented falling back to a loss.`,
+        rationale: `Capital preserved at breakeven after initial pump to +${pos.peakPnlPercent}%. Prevented falling back to a loss. Placed on 60m anti-top cooldown.`,
         outcomePnlUsd: newPnlUsd,
         outcomePnlPercent: newPnlPercent,
         improvementLessonTag: '[BREAKEVEN_PROTECTION]',
-        improvementNote: 'Capital defended: trade closed without taking a loss.',
+        improvementNote: 'Capital defended: trade closed without taking a loss. Anti-top FOMO cooldown active.',
       });
       continue;
     }
@@ -1039,6 +1061,27 @@ export async function runCopyBotTick(
               rationale: `Token recently triggered hard stop-loss. Blacklisted for 45 minutes to prevent re-entering a falling knife / dumping momentum.`,
               improvementLessonTag: '[ANTI_CHURN_COOLDOWN]',
               improvementNote: 'Capital protected from repetitive churn losses.',
+            });
+            continue;
+          }
+
+          // Anti-Top-FOMO Take-Profit Cooldown Check
+          const tpCooldownCheck = isTokenInTakeProfitCooldown(freshBuy.tokenAddress);
+          if (tpCooldownCheck.inCooldown) {
+            newLogs.unshift({
+              id: `log-skip-tp-cooldown-${Date.now()}`,
+              timestamp: Date.now(),
+              type: 'EVALUATION_REJECT',
+              tokenSymbol: freshBuy.tokenSymbol,
+              tokenAddress: freshBuy.tokenAddress,
+              chain: 'solana',
+              triggeredByWallet: wallet.address,
+              triggeredByWalletLabel: wallet.label,
+              convictionScore: 30,
+              action: `SKIPPED ${freshBuy.tokenSymbol}: Anti-FOMO Cooldown Active (${tpCooldownCheck.remainingMinutes}m remaining)`,
+              rationale: `Token recently hit Take-Profit / Trailing Stop. Blacklisted for 60 minutes to prevent buying the exhausted top of a pump.`,
+              improvementLessonTag: '[ANTI_TOP_FOMO_COOLDOWN]',
+              improvementNote: 'Capital protected from post-pump exhaustion and secondary dump tops.',
             });
             continue;
           }
@@ -1410,6 +1453,7 @@ export async function runGemRadarBotTick(
 
     // Trigger A: Full Take-Profit Target Hit (Calibrated 1.35x / +35% Sweet Spot)
     if (newPrice >= pos.takeProfitPrice1) {
+      registerTakeProfitCooldown(pos.tokenAddress);
       const totalReturned = +(pos.investedUsd + newPnlUsd).toFixed(2);
       cash = +(cash + totalReturned).toFixed(2);
       realizedPnl = +(realizedPnl + newPnlUsd).toFixed(2);
@@ -1456,17 +1500,18 @@ export async function runGemRadarBotTick(
         chain: 'solana',
         convictionScore: pos.alphaScoreAtEntry,
         action: `TAKE PROFIT (+${newPnlPercent}%) - Sold Gem Radar breakout ${pos.tokenSymbol} at $${newPrice}`,
-        rationale: `Automated Take-Profit triggered at target $${pos.takeProfitPrice1}. Capital returned: $${totalReturned}. Net P&L: +$${newPnlUsd}. Peak reached: +${pos.peakPnlPercent}%.`,
+        rationale: `Automated Take-Profit triggered at target $${pos.takeProfitPrice1}. Capital returned: $${totalReturned}. Net P&L: +$${newPnlUsd}. Peak reached: +${pos.peakPnlPercent}%. Placed on 60m anti-top cooldown.`,
         outcomePnlUsd: newPnlUsd,
         outcomePnlPercent: newPnlPercent,
         improvementLessonTag: '[WIN: GEM_BREAKOUT_TP]',
-        improvementNote: 'Locked in breakout gains mechanically at peak double.',
+        improvementNote: 'Locked in breakout gains mechanically at peak double. Anti-top FOMO cooldown active.',
       });
       continue;
     }
 
     // Trigger B: Dynamic Trailing Stop Hit (Locked In Gains)
     if (pos.isTrailingActive && newPrice <= pos.stopLossPrice) {
+      registerTakeProfitCooldown(pos.tokenAddress);
       const totalReturned = +(pos.investedUsd + newPnlUsd).toFixed(2);
       cash = +(cash + Math.max(0, totalReturned)).toFixed(2);
       realizedPnl = +(realizedPnl + newPnlUsd).toFixed(2);
@@ -1513,17 +1558,18 @@ export async function runGemRadarBotTick(
         chain: 'solana',
         convictionScore: pos.alphaScoreAtEntry,
         action: `TRAILING STOP (+${newPnlPercent}%) - Closed Gem ${pos.tokenSymbol} at $${newPrice}`,
-        rationale: `Dynamic trailing stop locked in profit after breakout peaked at +${pos.peakPnlPercent}%. Prevented profit round-trip into loss. Net P&L: +$${newPnlUsd}.`,
+        rationale: `Dynamic trailing stop locked in profit after breakout peaked at +${pos.peakPnlPercent}%. Prevented profit round-trip into loss. Net P&L: +$${newPnlUsd}. Placed on 60m anti-top cooldown.`,
         outcomePnlUsd: newPnlUsd,
         outcomePnlPercent: newPnlPercent,
         improvementLessonTag: '[WIN: GEM_TRAILING_PROTECTION]',
-        improvementNote: 'Dynamic trailing stop protected accumulated unrealized gains from post-breakout pullback.',
+        improvementNote: 'Dynamic trailing stop protected accumulated unrealized gains from post-breakout pullback. Anti-top FOMO cooldown active.',
       });
       continue;
     }
 
     // Trigger C: Breakeven Stop Hit (Protected Capital)
     if (pos.isBreakevenProtected && newPrice <= pos.stopLossPrice) {
+      registerTakeProfitCooldown(pos.tokenAddress);
       const totalReturned = +(pos.investedUsd + newPnlUsd).toFixed(2);
       cash = +(cash + Math.max(0, totalReturned)).toFixed(2);
       realizedPnl = +(realizedPnl + newPnlUsd).toFixed(2);
@@ -1570,11 +1616,11 @@ export async function runGemRadarBotTick(
         chain: 'solana',
         convictionScore: pos.alphaScoreAtEntry,
         action: `BREAKEVEN STOP (+${newPnlPercent}%) - Closed Gem ${pos.tokenSymbol} at $${newPrice}`,
-        rationale: `Capital preserved at breakeven after initial pump to +${pos.peakPnlPercent}%. Prevented falling back to a loss.`,
+        rationale: `Capital preserved at breakeven after initial pump to +${pos.peakPnlPercent}%. Prevented falling back to a loss. Placed on 60m anti-top cooldown.`,
         outcomePnlUsd: newPnlUsd,
         outcomePnlPercent: newPnlPercent,
         improvementLessonTag: '[BREAKEVEN_PROTECTION]',
-        improvementNote: 'Capital defended: trade closed without taking a loss.',
+        improvementNote: 'Capital defended: trade closed without taking a loss. Anti-top FOMO cooldown active.',
       });
       continue;
     }
@@ -1683,6 +1729,25 @@ export async function runGemRadarBotTick(
             rationale: `Token recently triggered stop-loss. Blacklisted for 45 minutes to prevent re-entering a dumping breakout.`,
             improvementLessonTag: '[ANTI_CHURN_COOLDOWN]',
             improvementNote: 'Capital protected from repetitive churn losses.',
+          });
+          continue;
+        }
+
+        // Anti-Top-FOMO Take-Profit Cooldown Check
+        const tpCooldownCheck = isTokenInTakeProfitCooldown(sig.tokenAddress);
+        if (tpCooldownCheck.inCooldown) {
+          newLogs.unshift({
+            id: `log-gem-skip-tp-cooldown-${Date.now()}`,
+            timestamp: Date.now(),
+            type: 'EVALUATION_REJECT',
+            tokenSymbol: sig.tokenSymbol,
+            tokenAddress: sig.tokenAddress,
+            chain: 'solana',
+            convictionScore: 30,
+            action: `SKIPPED ${sig.tokenSymbol}: Anti-FOMO Cooldown Active (${tpCooldownCheck.remainingMinutes}m remaining)`,
+            rationale: `Token recently hit Take-Profit / Trailing Stop. Blacklisted for 60 minutes to prevent buying the exhausted top of a finished pump.`,
+            improvementLessonTag: '[ANTI_TOP_FOMO_COOLDOWN]',
+            improvementNote: 'Capital protected from post-pump exhaustion and secondary dump tops.',
           });
           continue;
         }
