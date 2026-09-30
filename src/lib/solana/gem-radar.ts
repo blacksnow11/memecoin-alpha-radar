@@ -21,8 +21,14 @@ export async function detectPreBreakoutGemSignals(): Promise<PreBreakoutGemSigna
     const volume1h = token.volume1hUsd || 0;
     const liquidity = token.liquidityUsd || 0;
 
-    // Strict Entry Guard: Reject hyper-fragile pools with < $15k liquidity to prevent flash rug vulnerability
+    // Strict Entry Guard 1: Reject hyper-fragile pools with < $15k liquidity to prevent flash rug vulnerability
     if (liquidity < 15000) continue;
+
+    // Strict Entry Guard 2: Market Cap Ceiling (max $30M) - Filters out mega-caps (BOME, MEW, CHILLGUY, ai16z) that cause stagnation churn
+    if (token.marketCap > 30000000) continue;
+
+    // Strict Entry Guard 3: Liquidity Pool Ceiling (max $350k) - Focuses on price-elastic pools that can actually pump +35% in minutes
+    if (liquidity > 350000) continue;
 
     const buyers = token.buyers24h || 0;
     const sellers = token.sellers24h || 1;
@@ -43,8 +49,8 @@ export async function detectPreBreakoutGemSignals(): Promise<PreBreakoutGemSigna
       capitalEfficiencyMultiplier: 12.5,
     }));
 
-    // Pattern 1: High 5-Minute Volume Velocity Acceleration
-    if (volume5m >= 1000 || volume1h >= 25000) {
+    // Pattern 1: High 5-Minute Volume Velocity Acceleration with Net Buyer Dominance (buyRatio >= 1.20)
+    if ((volume5m >= 1000 || volume1h >= 25000) && buyRatio >= 1.20) {
       const velocityScore = Math.min(98, Math.round(75 + (liquidity > 0 ? (volume5m / liquidity) * 20 : 5) + (buyRatio > 1.2 ? 6 : 0)));
       signals.push({
         id: `sig-vel-${token.symbol.toLowerCase()}-${token.address.slice(0, 6)}`,
@@ -68,12 +74,13 @@ export async function detectPreBreakoutGemSignals(): Promise<PreBreakoutGemSigna
         confidenceScore: velocityScore,
         detectedAt: Date.now(),
         dex: token.dex,
+        pairAddress: token.pairAddress,
       });
       continue;
     }
 
-    // Pattern 2: Ground-Floor Micro-Cap Discovery (< $10M MCap with active liquidity)
-    if (token.marketCap > 0 && token.marketCap < 10000000 && liquidity >= 5000) {
+    // Pattern 2: Ground-Floor Micro-Cap Discovery (< $10M MCap with active liquidity and healthy buy pressure)
+    if (token.marketCap > 0 && token.marketCap < 10000000 && liquidity >= 15000 && buyRatio >= 1.0) {
       const liquidityRatio = +((liquidity / token.marketCap) * 100).toFixed(1);
       const groundScore = Math.min(95, Math.round(72 + (liquidityRatio > 10 ? 12 : 5) + (token.priceChange24h > 0 ? 8 : 0)));
 
@@ -99,12 +106,13 @@ export async function detectPreBreakoutGemSignals(): Promise<PreBreakoutGemSigna
         confidenceScore: groundScore,
         detectedAt: Date.now(),
         dex: token.dex,
+        pairAddress: token.pairAddress,
       });
       continue;
     }
 
     // Pattern 3: Fresh Pump.fun Migration Momentum
-    if (token.isPumpFun) {
+    if (token.isPumpFun && buyRatio >= 1.0) {
       const pumpScore = Math.min(94, Math.round(78 + (token.priceChange24h > 0 ? 10 : 2)));
       signals.push({
         id: `sig-pump-${token.symbol.toLowerCase()}-${token.address.slice(0, 6)}`,
@@ -128,6 +136,7 @@ export async function detectPreBreakoutGemSignals(): Promise<PreBreakoutGemSigna
         confidenceScore: pumpScore,
         detectedAt: Date.now(),
         dex: token.dex,
+        pairAddress: token.pairAddress,
       });
     }
   }

@@ -9,7 +9,7 @@ import {
 } from './demo-trading-engine';
 import { DecisionLog, DemoPortfolio, DemoPosition } from './types';
 
-export const CURRENT_STATE_VERSION = 3;
+export const CURRENT_STATE_VERSION = 4;
 
 export interface StoredBotState {
   version?: number;
@@ -102,9 +102,9 @@ export function loadBotStateFromDisk(): StoredBotState {
       const raw = fs.readFileSync(targetFile, 'utf-8');
       const parsed = JSON.parse(raw);
       if (parsed && parsed.copyBot && parsed.gemRadarBot) {
-        // Auto-Migration & Reset: Version 3 resets to pristine clean slate with Calibrated TPs & Circuit Breakers
+        // Auto-Migration & Reset: Version 4 resets to pristine clean slate with V2.3 enhancements (Mega-Cap filters, +15% early breakeven protection, active trader dynamic discovery, pinned liquidity pools)
         if (!parsed.version || parsed.version < CURRENT_STATE_VERSION) {
-          console.log(`[BotStorage] Auto-migrating state to Version ${CURRENT_STATE_VERSION}: clean-slate reset`);
+          console.log(`[BotStorage] Auto-migrating state to Version ${CURRENT_STATE_VERSION}: clean-slate reset with V2.3 upgrades`);
           const fresh = getInitialState();
           memoryState = fresh;
           saveBotStateToDisk(fresh);

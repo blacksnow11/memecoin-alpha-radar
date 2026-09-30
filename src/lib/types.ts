@@ -164,6 +164,7 @@ export interface DemoPosition {
   whaleEntryTimestamp?: number;
   entryLiquidityUsd?: number;
   currentLiquidityUsd?: number;
+  pairAddress?: string;
 }
 
 export interface DemoClosedTrade {
@@ -198,6 +199,7 @@ export interface DemoClosedTrade {
   entryRationale: string;
   txHash?: string;
   simulatedGasFeeUsd: number;
+  pairAddress?: string;
 }
 
 export interface MilestoneRate {
@@ -326,6 +328,7 @@ export interface PreBreakoutGemSignal {
   detectedAt: number;
   dex: string;
   bondingCurvePercent?: number;
+  pairAddress?: string;
 }
 
 export interface ServerWorkerStatus {

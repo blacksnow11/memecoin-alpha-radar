@@ -14,7 +14,7 @@ import {
 } from './types';
 import { SEED_WALLETS } from './wallet-engine';
 import { fetchSolanaTokenPrice } from './solana/birdeye';
-import { checkWalletTokenHolding, fetchWalletOnChainSwaps } from './solana/helius';
+import { checkWalletTokenHolding, discoverActiveTraders, fetchWalletOnChainSwaps } from './solana/helius';
 import { detectPreBreakoutGemSignals } from './solana/gem-radar';
 
 // Clean-slate Initial State for the Autonomous Demo Paper Trading Bot
@@ -543,10 +543,13 @@ export async function runCopyBotTick(
   for (const pos of positions) {
     if (pos.status === 'CLOSED') continue;
 
-    const livePriceData = await fetchSolanaTokenPrice(pos.tokenAddress);
+    const livePriceData = await fetchSolanaTokenPrice(pos.tokenAddress, pos.pairAddress);
     const newPrice = livePriceData.priceUsd > 0 ? livePriceData.priceUsd : pos.currentPriceUsd;
     if (livePriceData.liquidityUsd) {
       pos.currentLiquidityUsd = livePriceData.liquidityUsd;
+    }
+    if (livePriceData.pairAddress && !pos.pairAddress) {
+      pos.pairAddress = livePriceData.pairAddress;
     }
     if (!pos.entryLiquidityUsd && pos.currentLiquidityUsd) {
       pos.entryLiquidityUsd = pos.currentLiquidityUsd;
@@ -559,22 +562,22 @@ export async function runCopyBotTick(
     // Update Peak & Lowest MFE Metrics
     updatePositionPeakAndMilestones(pos, newPrice, newPnlPercent);
 
-    // Dynamic Rule 1: Breakeven Stop Ratchet
-    // When peak PnL reaches >= +20%, move stop loss to Entry + 3% (guarantees net positive after gas)
-    if ((pos.peakPnlPercent ?? 0) >= 20) {
+    // Dynamic Rule 1: Early Breakeven Stop Ratchet
+    // When peak PnL reaches >= +15%, move stop loss to Entry + 1.5% (covers gas & eliminates round-trip losses)
+    if ((pos.peakPnlPercent ?? 0) >= 15) {
       pos.isBreakevenProtected = true;
-      const breakevenStop = +(pos.entryPriceUsd * 1.03).toFixed(6);
+      const breakevenStop = +(pos.entryPriceUsd * 1.015).toFixed(6);
       if (pos.stopLossPrice < breakevenStop) {
         pos.stopLossPrice = breakevenStop;
       }
     }
 
     // Dynamic Rule 2: Trailing Stop Activation
-    // When peak PnL reaches >= +30%, activate a dynamic trailing stop 15% below peak
-    if ((pos.peakPnlPercent ?? 0) >= 30) {
+    // When peak PnL reaches >= +25%, activate a dynamic trailing stop 12% below peak
+    if ((pos.peakPnlPercent ?? 0) >= 25) {
       pos.isTrailingActive = true;
       const peakPrice = pos.peakPriceUsd || newPrice;
-      const dynamicTrailingStop = +(peakPrice * 0.85).toFixed(6);
+      const dynamicTrailingStop = +(peakPrice * 0.88).toFixed(6);
       if (!pos.trailingStopPrice || dynamicTrailingStop > pos.trailingStopPrice) {
         pos.trailingStopPrice = dynamicTrailingStop;
       }
@@ -636,6 +639,7 @@ export async function runCopyBotTick(
         alphaScoreAtEntry: pos.alphaScoreAtEntry,
         entryRationale: pos.entryRationale,
         simulatedGasFeeUsd: 0.005,
+        pairAddress: pos.pairAddress,
       };
       updatedClosedTrades.unshift(closedRecord);
 
@@ -694,6 +698,7 @@ export async function runCopyBotTick(
         alphaScoreAtEntry: pos.alphaScoreAtEntry,
         entryRationale: pos.entryRationale,
         simulatedGasFeeUsd: 0.005,
+        pairAddress: pos.pairAddress,
       };
       updatedClosedTrades.unshift(closedRecord);
 
@@ -752,6 +757,7 @@ export async function runCopyBotTick(
         alphaScoreAtEntry: pos.alphaScoreAtEntry,
         entryRationale: pos.entryRationale,
         simulatedGasFeeUsd: 0.005,
+        pairAddress: pos.pairAddress,
       };
       updatedClosedTrades.unshift(closedRecord);
 
@@ -810,6 +816,7 @@ export async function runCopyBotTick(
         alphaScoreAtEntry: pos.alphaScoreAtEntry,
         entryRationale: pos.entryRationale,
         simulatedGasFeeUsd: 0.005,
+        pairAddress: pos.pairAddress,
       };
       updatedClosedTrades.unshift(closedRecord);
 
@@ -868,6 +875,7 @@ export async function runCopyBotTick(
         alphaScoreAtEntry: pos.alphaScoreAtEntry,
         entryRationale: pos.entryRationale,
         simulatedGasFeeUsd: 0.005,
+        pairAddress: pos.pairAddress,
       };
       updatedClosedTrades.unshift(closedRecord);
 
@@ -929,6 +937,7 @@ export async function runCopyBotTick(
         alphaScoreAtEntry: pos.alphaScoreAtEntry,
         entryRationale: pos.entryRationale,
         simulatedGasFeeUsd: 0.005,
+        pairAddress: pos.pairAddress,
       };
       updatedClosedTrades.unshift(closedRecord);
 
@@ -972,10 +981,32 @@ export async function runCopyBotTick(
   // 2. Real Whale Copy Evaluation: Scan tracked alpha whales for genuine recent buys
   const activePositionCount = updatedPositions.filter((p) => p.status === 'OPEN').length;
   if (activePositionCount < portfolio.maxConcurrentPositions && cash >= portfolio.allocationPerTradeUsd) {
-    const trackedAlphaWallets = SEED_WALLETS.slice(0, 8);
-    const maxRecencyMs = 45 * 60 * 1000; // 45-minute recency window (widened from 15m)
+    const targetWallets: Array<{ address: string; label: string; isDynamic?: boolean }> = SEED_WALLETS.slice(0, 8).map((w) => ({
+      address: w.address,
+      label: w.label,
+    }));
 
-    for (const wallet of trackedAlphaWallets) {
+    // If slots are available and cash permits, dynamically pull active Solana traders from real on-chain swaps
+    if (updatedPositions.length < portfolio.maxConcurrentPositions && cash >= portfolio.allocationPerTradeUsd) {
+      try {
+        const liveTraderAddresses = await discoverActiveTraders(12);
+        for (const addr of liveTraderAddresses) {
+          if (!targetWallets.some((w) => w.address.toLowerCase() === addr.toLowerCase())) {
+            targetWallets.push({
+              address: addr,
+              label: `Active Solana Trader (${addr.slice(0, 4)}...${addr.slice(-4)})`,
+              isDynamic: true,
+            });
+          }
+        }
+      } catch (err) {
+        // Fallback gracefully
+      }
+    }
+
+    const maxRecencyMs = 45 * 60 * 1000; // 45-minute recency window
+
+    for (const wallet of targetWallets) {
       if (updatedPositions.length >= portfolio.maxConcurrentPositions || cash < portfolio.allocationPerTradeUsd) break;
 
       try {
@@ -1100,6 +1131,7 @@ export async function runCopyBotTick(
               isTrailingActive: false,
               entryLiquidityUsd: priceData.liquidityUsd || 25000,
               currentLiquidityUsd: priceData.liquidityUsd || 25000,
+              pairAddress: priceData.pairAddress,
             };
 
             updatedPositions.push(newPos);
@@ -1201,10 +1233,13 @@ export async function runGemRadarBotTick(
   for (const pos of positions) {
     if (pos.status === 'CLOSED') continue;
 
-    const livePriceData = await fetchSolanaTokenPrice(pos.tokenAddress);
+    const livePriceData = await fetchSolanaTokenPrice(pos.tokenAddress, pos.pairAddress);
     const newPrice = livePriceData.priceUsd > 0 ? livePriceData.priceUsd : pos.currentPriceUsd;
     if (livePriceData.liquidityUsd) {
       pos.currentLiquidityUsd = livePriceData.liquidityUsd;
+    }
+    if (livePriceData.pairAddress && !pos.pairAddress) {
+      pos.pairAddress = livePriceData.pairAddress;
     }
     if (!pos.entryLiquidityUsd && pos.currentLiquidityUsd) {
       pos.entryLiquidityUsd = pos.currentLiquidityUsd;
@@ -1217,22 +1252,22 @@ export async function runGemRadarBotTick(
     // Update Peak & Lowest MFE Metrics
     updatePositionPeakAndMilestones(pos, newPrice, newPnlPercent);
 
-    // Dynamic Rule 1: Breakeven Stop Ratchet
-    // When peak PnL reaches >= +20%, move stop loss to Entry + 3% (guarantees net positive after gas)
-    if ((pos.peakPnlPercent ?? 0) >= 20) {
+    // Dynamic Rule 1: Early Breakeven Stop Ratchet
+    // When peak PnL reaches >= +15%, move stop loss to Entry + 1.5% (covers gas & eliminates round-trip losses)
+    if ((pos.peakPnlPercent ?? 0) >= 15) {
       pos.isBreakevenProtected = true;
-      const breakevenStop = +(pos.entryPriceUsd * 1.03).toFixed(6);
+      const breakevenStop = +(pos.entryPriceUsd * 1.015).toFixed(6);
       if (pos.stopLossPrice < breakevenStop) {
         pos.stopLossPrice = breakevenStop;
       }
     }
 
     // Dynamic Rule 2: Trailing Stop Activation
-    // When peak PnL reaches >= +30%, activate a dynamic trailing stop 15% below peak
-    if ((pos.peakPnlPercent ?? 0) >= 30) {
+    // When peak PnL reaches >= +25%, activate a dynamic trailing stop 12% below peak
+    if ((pos.peakPnlPercent ?? 0) >= 25) {
       pos.isTrailingActive = true;
       const peakPrice = pos.peakPriceUsd || newPrice;
-      const dynamicTrailingStop = +(peakPrice * 0.85).toFixed(6);
+      const dynamicTrailingStop = +(peakPrice * 0.88).toFixed(6);
       if (!pos.trailingStopPrice || dynamicTrailingStop > pos.trailingStopPrice) {
         pos.trailingStopPrice = dynamicTrailingStop;
       }
@@ -1294,6 +1329,7 @@ export async function runGemRadarBotTick(
         alphaScoreAtEntry: pos.alphaScoreAtEntry,
         entryRationale: pos.entryRationale,
         simulatedGasFeeUsd: 0.005,
+        pairAddress: pos.pairAddress,
       };
       updatedClosedTrades.unshift(closedRecord);
 
@@ -1350,6 +1386,7 @@ export async function runGemRadarBotTick(
         alphaScoreAtEntry: pos.alphaScoreAtEntry,
         entryRationale: pos.entryRationale,
         simulatedGasFeeUsd: 0.005,
+        pairAddress: pos.pairAddress,
       };
       updatedClosedTrades.unshift(closedRecord);
 
@@ -1406,6 +1443,7 @@ export async function runGemRadarBotTick(
         alphaScoreAtEntry: pos.alphaScoreAtEntry,
         entryRationale: pos.entryRationale,
         simulatedGasFeeUsd: 0.005,
+        pairAddress: pos.pairAddress,
       };
       updatedClosedTrades.unshift(closedRecord);
 
@@ -1462,6 +1500,7 @@ export async function runGemRadarBotTick(
         alphaScoreAtEntry: pos.alphaScoreAtEntry,
         entryRationale: pos.entryRationale,
         simulatedGasFeeUsd: 0.005,
+        pairAddress: pos.pairAddress,
       };
       updatedClosedTrades.unshift(closedRecord);
 
@@ -1518,6 +1557,7 @@ export async function runGemRadarBotTick(
         alphaScoreAtEntry: pos.alphaScoreAtEntry,
         entryRationale: pos.entryRationale,
         simulatedGasFeeUsd: 0.005,
+        pairAddress: pos.pairAddress,
       };
       updatedClosedTrades.unshift(closedRecord);
 
@@ -1577,6 +1617,7 @@ export async function runGemRadarBotTick(
         alphaScoreAtEntry: pos.alphaScoreAtEntry,
         entryRationale: pos.entryRationale,
         simulatedGasFeeUsd: 0.005,
+        pairAddress: pos.pairAddress,
       };
       updatedClosedTrades.unshift(closedRecord);
 
@@ -1685,6 +1726,7 @@ export async function runGemRadarBotTick(
             isTrailingActive: false,
             entryLiquidityUsd: sig.liquidityUsd || 25000,
             currentLiquidityUsd: sig.liquidityUsd || 25000,
+            pairAddress: sig.pairAddress,
           };
 
           updatedPositions.push(newPos);

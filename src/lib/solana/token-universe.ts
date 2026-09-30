@@ -15,6 +15,7 @@ export interface SolanaUniverseToken extends Token {
   volume1hUsd?: number;
   bondingCurvePercent?: number;
   isPumpFun?: boolean;
+  pairAddress?: string;
 }
 
 // 100% Verified Solana Memecoin Mints (Verified on Solscan & DexScreener)
@@ -124,6 +125,7 @@ async function fetchDexScreenerPairsForMints(mints: string[]): Promise<SolanaUni
           sellers24h,
           isPumpFun,
           url: bestPair.url,
+          pairAddress: bestPair.pairAddress,
         });
       }
     } catch (err) {
