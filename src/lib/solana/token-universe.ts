@@ -136,27 +136,49 @@ async function fetchDexScreenerPairsForMints(mints: string[]): Promise<SolanaUni
   return results;
 }
 
-// Fetch live boosted / trending tokens on Solana from DexScreener
-async function fetchLiveDexScreenerBoostedMints(): Promise<string[]> {
-  try {
-    const res = await fetch('https://api.dexscreener.com/token-boosts/latest/v1', {
-      headers: { Accept: 'application/json' },
-      next: { revalidate: 30 },
-    });
-    if (!res.ok) return [];
-    const data = await res.json();
-    if (!Array.isArray(data)) return [];
+// Multi-Source Discovery: Ingests live trending, top-boosted, verified profiles, and Raydium pools from DexScreener
+async function fetchLiveDexScreenerCandidateMints(): Promise<string[]> {
+  const mints = new Set<string>();
 
-    const solanaMints = data
-      .filter((item: any) => item.chainId === 'solana' && item.tokenAddress)
-      .map((item: any) => item.tokenAddress)
-      .slice(0, 15);
+  const endpoints = [
+    'https://api.dexscreener.com/token-boosts/top/v1',
+    'https://api.dexscreener.com/token-boosts/latest/v1',
+    'https://api.dexscreener.com/token-profiles/latest/v1',
+    'https://api.dexscreener.com/latest/dex/search?q=raydium',
+  ];
 
-    return solanaMints;
-  } catch (err) {
-    console.warn('[DexScreener] Error fetching boosted tokens:', err);
-    return [];
-  }
+  await Promise.allSettled(
+    endpoints.map(async (url) => {
+      try {
+        const res = await fetch(url, {
+          headers: { Accept: 'application/json' },
+          next: { revalidate: 30 },
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+
+        if (Array.isArray(data)) {
+          // Format for token-boosts and token-profiles
+          for (const item of data) {
+            if (item.chainId === 'solana' && item.tokenAddress) {
+              mints.add(item.tokenAddress);
+            }
+          }
+        } else if (Array.isArray(data.pairs)) {
+          // Format for search?q=raydium
+          for (const pair of data.pairs) {
+            if (pair.chainId === 'solana' && pair.baseToken?.address) {
+              mints.add(pair.baseToken.address);
+            }
+          }
+        }
+      } catch (err) {
+        // Non-blocking fail-soft
+      }
+    })
+  );
+
+  return Array.from(mints);
 }
 
 // Main entrypoint: Returns 100% live token universe from Solana mainnet
@@ -169,10 +191,10 @@ export async function getSolanaTokenUniverse(): Promise<SolanaUniverseToken[]> {
   // 1. Gather verified mints
   const mintSet = new Set<string>(VERIFIED_SOLANA_MEMECOIN_MINTS.map((m) => m.address));
 
-  // 2. Discover live boosted/trending Solana memecoins from DexScreener
-  const boostedMints = await fetchLiveDexScreenerBoostedMints();
-  for (const bMint of boostedMints) {
-    mintSet.add(bMint);
+  // 2. Discover live multi-source Solana memecoins from DexScreener
+  const candidateMints = await fetchLiveDexScreenerCandidateMints();
+  for (const cMint of candidateMints) {
+    mintSet.add(cMint);
   }
 
   // 3. Fetch 100% live DexScreener pricing and pool details for all candidate mints

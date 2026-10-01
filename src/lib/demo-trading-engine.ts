@@ -736,6 +736,7 @@ export async function runCopyBotTick(
       if (newPnlUsd >= 0) wins++; else losses++;
 
       if (pos.copiedFromWallet) registerTraderTradeOutcome(pos.copiedFromWallet, newPnlUsd >= 0);
+      registerStopLossCooldown(pos.tokenAddress);
 
       const closedRecord: DemoClosedTrade = {
         id: `closed-copy-${Date.now()}-${Math.random().toString(36).substring(7)}`,
@@ -1121,6 +1122,26 @@ export async function runCopyBotTick(
           const exitKey = `${wallet.address}:${freshBuy.tokenAddress}:${freshBuy.signature}`;
           if (knownExitedBuysSet.has(exitKey)) {
             continue; // Already processed and verified exited; move to next candidate buy
+          }
+
+          // Trader Quality Gate: Reject dynamic unvetted traders buying micro amounts (< 1.0 SOL)
+          if (wallet.isDynamic && (freshBuy.solAmount || 0) < 1.0) {
+            newLogs.unshift({
+              id: `log-skip-dynamic-size-${Date.now()}`,
+              timestamp: Date.now(),
+              type: 'EVALUATION_REJECT',
+              tokenSymbol: freshBuy.tokenSymbol,
+              tokenAddress: freshBuy.tokenAddress,
+              chain: 'solana',
+              triggeredByWallet: wallet.address,
+              triggeredByWalletLabel: wallet.label,
+              convictionScore: 25,
+              action: `SKIPPED ${freshBuy.tokenSymbol}: Dynamic Trader Buy Under 1.0 SOL (${freshBuy.solAmount || 0} SOL)`,
+              rationale: `Dynamic unvetted trader executed micro-buy (< 1.0 SOL). Filtered out to reject pump.fun snipers and preserve bankroll for high-conviction whale moves.`,
+              improvementLessonTag: '[AVOIDED_MICRO_SNIPER]',
+              improvementNote: 'Trader Quality Gate: Required >= 1.0 SOL on dynamic trader signals.',
+            });
+            continue;
           }
 
           const alreadyHolding = updatedPositions.some((p) => p.tokenAddress === freshBuy.tokenAddress);
@@ -1559,6 +1580,7 @@ export async function runGemRadarBotTick(
       cash = +(cash + Math.max(0, totalReturned)).toFixed(2);
       realizedPnl = +(realizedPnl + newPnlUsd).toFixed(2);
       if (newPnlUsd >= 0) wins++; else losses++;
+      registerStopLossCooldown(pos.tokenAddress);
 
       const closedRecord: DemoClosedTrade = {
         id: `closed-gem-${Date.now()}-${Math.random().toString(36).substring(7)}`,

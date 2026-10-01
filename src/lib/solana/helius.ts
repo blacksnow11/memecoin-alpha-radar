@@ -214,7 +214,10 @@ export async function discoverActiveTraders(limit = 15): Promise<string[]> {
 
   try {
     const swaps = await fetchLivePumpFunSwaps(limit);
-    const uniqueWallets = Array.from(new Set(swaps.map((s) => s.walletAddress).filter(Boolean)));
+    // Prioritize high-value traders swapping >= 1.0 SOL (~$180+) to filter out pump.fun micro-bot snipers
+    const highValueSwaps = swaps.filter((s) => (s.solAmount || 0) >= 1.0);
+    const targetSwaps = highValueSwaps.length > 0 ? highValueSwaps : swaps;
+    const uniqueWallets = Array.from(new Set(targetSwaps.map((s) => s.walletAddress).filter(Boolean)));
     discoveredTradersCache = { data: uniqueWallets, expiry: now + 60000 }; // 60s cache
     return uniqueWallets;
   } catch (err) {

@@ -27,11 +27,11 @@ export async function detectPreBreakoutGemSignals(): Promise<PreBreakoutGemSigna
     // Strict Entry Guard 1b: Reject immature pools under 3 minutes old with low activity (< 50 transactions)
     if (token.ageMinutes < 3 && ((token.buyers24h || 0) + (token.sellers24h || 0)) < 50) continue;
 
-    // Strict Entry Guard 2: Market Cap Ceiling (max $30M) - Filters out mega-caps (BOME, MEW, CHILLGUY) that cause stagnation churn
-    if (token.marketCap > 30000000) continue;
+    // Strict Entry Guard 2: Market Cap Ceiling (max $75M) - Filters out mega-caps while allowing high-momentum mid-caps
+    if (token.marketCap > 75000000) continue;
 
-    // Strict Entry Guard 3: Liquidity Pool Ceiling (max $350k) - Focuses on price-elastic pools that can actually pump +35% in minutes
-    if (liquidity > 350000) continue;
+    // Strict Entry Guard 3: Liquidity Pool Ceiling (max $1.5M) - Allows healthy $500k-$1M mid-caps while filtering saturated mega-pools
+    if (liquidity > 1500000) continue;
 
     // Strict Entry Guard 4: Active Trading Velocity Floor - Rejects dead/abandoned zombie pools with zero volume
     if (volume5m < 500 && volume1h < 3000) continue;
