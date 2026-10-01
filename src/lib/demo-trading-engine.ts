@@ -100,6 +100,9 @@ export function isTraderInCooldown(walletAddress: string): { inCooldown: boolean
 // when a tracked whale has closed a position for a recent swap.
 export const knownExitedBuysSet = new Set<string>();
 
+// Rejected Buy Signatures Set: prevents repeated spam logs when an unvetted dynamic buy is skipped
+export const knownRejectedBuysSet = new Set<string>();
+
 // Standard MFE Profit Milestones for pattern analysis and optimal target discovery
 export const STANDARD_PROFIT_MILESTONES = [
   { percent: 15, label: '+15% Move' },
@@ -1120,12 +1123,13 @@ export async function runCopyBotTick(
           if (updatedPositions.length >= portfolio.maxConcurrentPositions || cash < portfolio.allocationPerTradeUsd) break;
 
           const exitKey = `${wallet.address}:${freshBuy.tokenAddress}:${freshBuy.signature}`;
-          if (knownExitedBuysSet.has(exitKey)) {
-            continue; // Already processed and verified exited; move to next candidate buy
+          if (knownExitedBuysSet.has(exitKey) || knownRejectedBuysSet.has(exitKey)) {
+            continue; // Already processed and verified exited or rejected; move to next candidate buy
           }
 
           // Trader Quality Gate: Reject dynamic unvetted traders buying micro amounts (< 1.0 SOL)
           if (wallet.isDynamic && (freshBuy.solAmount || 0) < 1.0) {
+            knownRejectedBuysSet.add(exitKey);
             newLogs.unshift({
               id: `log-skip-dynamic-size-${Date.now()}`,
               timestamp: Date.now(),
@@ -1216,9 +1220,9 @@ export async function runCopyBotTick(
           const spotPrice = priceData.priceUsd > 0 ? priceData.priceUsd : (freshBuy.priceSol ? freshBuy.priceSol * 184 : 0);
 
           if (spotPrice > 0) {
-            // Whale Copy Safety Floor 1: Pool Liquidity >= $25,000 (Prevents pump.fun Raydium migration dumps)
+            // Whale Copy Safety Floor 1: Pool Liquidity >= $35,000 (Prevents pump.fun Raydium migration dumps)
             const poolLiquidity = priceData.liquidityUsd || 0;
-            if (poolLiquidity < 25000) {
+            if (poolLiquidity < 35000) {
               newLogs.unshift({
                 id: `log-skip-liq-${Date.now()}`,
                 timestamp: Date.now(),
@@ -1229,10 +1233,10 @@ export async function runCopyBotTick(
                 triggeredByWallet: wallet.address,
                 triggeredByWalletLabel: wallet.label,
                 convictionScore: 20,
-                action: `SKIPPED ${freshBuy.tokenSymbol}: Liquidity Under $25k ($${Math.round(poolLiquidity).toLocaleString()})`,
-                rationale: `Token pool liquidity ($${Math.round(poolLiquidity).toLocaleString()}) is below the $25,000 safety threshold. Protected against pump.fun Raydium migration rugs.`,
+                action: `SKIPPED ${freshBuy.tokenSymbol}: Liquidity Under $35k ($${Math.round(poolLiquidity).toLocaleString()})`,
+                rationale: `Token pool liquidity ($${Math.round(poolLiquidity).toLocaleString()}) is below the $35,000 safety threshold. Protected against pump.fun Raydium migration rugs.`,
                 improvementLessonTag: '[AVOIDED_LOW_LIQUIDITY]',
-                improvementNote: 'Enforced $25k liquidity floor on copy trading.',
+                improvementNote: 'Enforced $35k liquidity floor on copy trading.',
               });
               continue;
             }
@@ -1347,8 +1351,8 @@ export async function runCopyBotTick(
               profitMilestonesReached: [],
               isBreakevenProtected: false,
               isTrailingActive: false,
-              entryLiquidityUsd: priceData.liquidityUsd || 25000,
-              currentLiquidityUsd: priceData.liquidityUsd || 25000,
+              entryLiquidityUsd: priceData.liquidityUsd || 35000,
+              currentLiquidityUsd: priceData.liquidityUsd || 35000,
               pairAddress: priceData.pairAddress,
             };
 
@@ -1818,8 +1822,13 @@ export async function runGemRadarBotTick(
       continue;
     }
 
-    // Trigger D: Hard Stop Loss Cut
-    if (newPrice <= pos.stopLossPrice) {
+    // Trigger QC: Quick-Cut Stop Loss for Zero-Momentum Dips
+    // If a position has been held for >= 3m, never gained breakout momentum (peak < +3%), and drops to <= -15%, cut it immediately
+    // before it gaps down to -20% or worse.
+    const isZeroMomentumDip = holdDurationMinutes >= 3 && (pos.peakPnlPercent ?? 0) < 3 && newPnlPercent <= -15;
+
+    // Trigger D: Hard Stop Loss Cut or Quick-Cut Stop
+    if (isZeroMomentumDip || newPrice <= pos.stopLossPrice) {
       const totalReturned = +(pos.investedUsd + newPnlUsd).toFixed(2);
       cash = +(cash + Math.max(0, totalReturned)).toFixed(2);
       realizedPnl = +(realizedPnl + newPnlUsd).toFixed(2);
@@ -1828,6 +1837,7 @@ export async function runGemRadarBotTick(
       // Register 45-minute anti-churn cooldown for this token
       registerStopLossCooldown(pos.tokenAddress);
 
+      const isQuickCut = isZeroMomentumDip && newPrice > pos.stopLossPrice;
       const closedRecord: DemoClosedTrade = {
         id: `closed-gem-${Date.now()}-${Math.random().toString(36).substring(7)}`,
         tokenAddress: pos.tokenAddress,
@@ -1847,7 +1857,9 @@ export async function runGemRadarBotTick(
         netPnlPercent: newPnlPercent,
         multiplier: +(newPrice / pos.entryPriceUsd).toFixed(2),
         exitReason: 'STOP_LOSS',
-        exitReasonDetail: `Hard Stop-Loss Cut (${newPnlPercent}%) on Gem Radar breakout at $${newPrice}`,
+        exitReasonDetail: isQuickCut
+          ? `Quick-Cut Stop Loss (${newPnlPercent}%) on Zero-Momentum Breakdown - Saved capital before gap slip`
+          : `Hard Stop-Loss Cut (${newPnlPercent}%) on Gem Radar breakout at $${newPrice}`,
         peakPriceUsd: pos.peakPriceUsd ?? pos.entryPriceUsd,
         peakPnlPercent: pos.peakPnlPercent ?? Math.max(0, newPnlPercent),
         lowestPriceUsd: pos.lowestPriceUsd ?? pos.entryPriceUsd,
@@ -1868,12 +1880,16 @@ export async function runGemRadarBotTick(
         tokenAddress: pos.tokenAddress,
         chain: 'solana',
         convictionScore: pos.alphaScoreAtEntry,
-        action: `STOP LOSS HIT (${newPnlPercent}%) - Cut Gem ${pos.tokenSymbol} at $${newPrice}`,
-        rationale: `Automated Stop-Loss triggered below threshold ($${pos.stopLossPrice}). Placed on 45m anti-churn cooldown to prevent re-entering falling knife. Net Loss: -$${Math.abs(newPnlUsd)}.`,
+        action: isQuickCut
+          ? `QUICK-CUT STOP HIT (${newPnlPercent}%) - Cut Gem ${pos.tokenSymbol} at $${newPrice}`
+          : `STOP LOSS HIT (${newPnlPercent}%) - Cut Gem ${pos.tokenSymbol} at $${newPrice}`,
+        rationale: isQuickCut
+          ? `Quick-Cut Triggered: Position failed to gain breakout momentum (peak was only +${pos.peakPnlPercent ?? 0}%) and broke below -15% support. Cut early to save capital from gap-down slippage. Net Loss: -$${Math.abs(newPnlUsd)}.`
+          : `Automated Stop-Loss triggered below threshold ($${pos.stopLossPrice}). Placed on 45m anti-churn cooldown to prevent re-entering falling knife. Net Loss: -$${Math.abs(newPnlUsd)}.`,
         outcomePnlUsd: newPnlUsd,
         outcomePnlPercent: newPnlPercent,
-        improvementLessonTag: '[LOSS: GEM_BREAKOUT_STOP]',
-        improvementNote: 'Capital protected from post-breakout pullback. Cooldown activated.',
+        improvementLessonTag: isQuickCut ? '[QUICK_CUT_STOP]' : '[LOSS: GEM_BREAKOUT_STOP]',
+        improvementNote: isQuickCut ? 'Protected bankroll by cutting failed breakout early.' : 'Capital protected from post-breakout pullback. Cooldown activated.',
       });
       continue;
     }
@@ -1945,8 +1961,8 @@ export async function runGemRadarBotTick(
           continue;
         }
 
-        // Entry criteria: Confidence >= 80, liquidity depth >= $25k (Strict Floor), valid spot price
-        if (sig.confidenceScore >= 80 && sig.liquidityUsd >= 25000 && sig.priceUsd > 0) {
+        // Entry criteria: Confidence >= 80, liquidity depth >= $35k (Strict Floor), valid spot price
+        if (sig.confidenceScore >= 80 && sig.liquidityUsd >= 35000 && sig.priceUsd > 0) {
           const allocation = portfolio.allocationPerTradeUsd;
           cash = +(cash - allocation).toFixed(2);
           const spotPrice = sig.priceUsd;
@@ -1982,8 +1998,8 @@ export async function runGemRadarBotTick(
             profitMilestonesReached: [],
             isBreakevenProtected: false,
             isTrailingActive: false,
-            entryLiquidityUsd: sig.liquidityUsd || 25000,
-            currentLiquidityUsd: sig.liquidityUsd || 25000,
+            entryLiquidityUsd: sig.liquidityUsd || 35000,
+            currentLiquidityUsd: sig.liquidityUsd || 35000,
             pairAddress: sig.pairAddress,
           };
 

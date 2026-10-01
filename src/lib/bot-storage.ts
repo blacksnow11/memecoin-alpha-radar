@@ -9,7 +9,7 @@ import {
 } from './demo-trading-engine';
 import { DecisionLog, DemoPortfolio, DemoPosition } from './types';
 
-export const CURRENT_STATE_VERSION = 8;
+export const CURRENT_STATE_VERSION = 9;
 
 export interface StoredBotState {
   version?: number;
@@ -102,9 +102,9 @@ export function loadBotStateFromDisk(): StoredBotState {
       const raw = fs.readFileSync(targetFile, 'utf-8');
       const parsed = JSON.parse(raw);
       if (parsed && parsed.copyBot && parsed.gemRadarBot) {
-        // Auto-Migration & Reset: Version 8 resets to pristine clean slate with V2.7 upgrades (Multi-source universe discovery, $1.5M liquidity ceiling, $75M mcap ceiling, Trader Quality Gate >= 1.0 SOL, stagnation cooldowns)
+        // Auto-Migration & Reset: Version 9 resets to pristine clean slate with V2.8 upgrades ($35k liquidity floor, turnover frenzy guard, dynamic rejection caching, zero-momentum quick-cuts)
         if (!parsed.version || parsed.version < CURRENT_STATE_VERSION) {
-          console.log(`[BotStorage] Auto-migrating state to Version ${CURRENT_STATE_VERSION}: clean-slate reset with V2.7 upgrades (multi-source discovery, $1.5M liq ceiling, Trader Quality Gate)`);
+          console.log(`[BotStorage] Auto-migrating state to Version ${CURRENT_STATE_VERSION}: clean-slate reset with V2.8 upgrades ($35k floor, frenzy guard, quick-cut stops)`);
           const fresh = getInitialState();
           memoryState = fresh;
           saveBotStateToDisk(fresh);

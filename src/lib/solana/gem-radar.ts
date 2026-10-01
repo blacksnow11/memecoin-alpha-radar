@@ -21,11 +21,14 @@ export async function detectPreBreakoutGemSignals(): Promise<PreBreakoutGemSigna
     const volume1h = token.volume1hUsd || 0;
     const liquidity = token.liquidityUsd || 0;
 
-    // Strict Entry Guard 1: Reject hyper-fragile pools with < $25k liquidity to prevent flash rug vulnerability
-    if (liquidity < 25000) continue;
+    // Strict Entry Guard 1: Reject hyper-fragile pools with < $35k liquidity to prevent flash rug vulnerability
+    if (liquidity < 35000) continue;
 
     // Strict Entry Guard 1b: Reject immature pools under 3 minutes old with low activity (< 50 transactions)
     if (token.ageMinutes < 3 && ((token.buyers24h || 0) + (token.sellers24h || 0)) < 50) continue;
+
+    // Strict Entry Guard 1c: Turnover Frenzy Guard - Reject pools under $60k where 5m volume > 1.5x total liquidity (sniper dump trap)
+    if (liquidity < 60000 && volume5m > liquidity * 1.5) continue;
 
     // Strict Entry Guard 2: Market Cap Ceiling (max $75M) - Filters out mega-caps while allowing high-momentum mid-caps
     if (token.marketCap > 75000000) continue;
