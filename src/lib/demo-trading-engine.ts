@@ -96,6 +96,10 @@ export function isTraderInCooldown(walletAddress: string): { inCooldown: boolean
   return { inCooldown: true, remainingMinutes: Math.ceil(diff / 60000) };
 }
 
+// Exited Buy Signatures Set: prevents repeated rejection spam and evaluation locks
+// when a tracked whale has closed a position for a recent swap.
+export const knownExitedBuysSet = new Set<string>();
+
 // Standard MFE Profit Milestones for pattern analysis and optimal target discovery
 export const STANDARD_PROFIT_MILESTONES = [
   { percent: 15, label: '+15% Move' },
@@ -877,7 +881,7 @@ export async function runCopyBotTick(
         netPnlPercent: newPnlPercent,
         multiplier: +(newPrice / pos.entryPriceUsd).toFixed(2),
         exitReason: 'TRAILING_STOP',
-        exitReasonDetail: `Trailing Stop Triggered (+${newPnlPercent}%) - Locked in gains after peak +${pos.peakPnlPercent}%`,
+        exitReasonDetail: `Trailing Stop Triggered (${newPnlPercent >= 0 ? '+' : ''}${newPnlPercent}%) - Locked in gains after peak +${pos.peakPnlPercent}%`,
         peakPriceUsd: pos.peakPriceUsd ?? pos.entryPriceUsd,
         peakPnlPercent: pos.peakPnlPercent ?? Math.max(0, newPnlPercent),
         lowestPriceUsd: pos.lowestPriceUsd ?? pos.entryPriceUsd,
@@ -900,7 +904,7 @@ export async function runCopyBotTick(
         triggeredByWallet: pos.copiedFromWallet,
         triggeredByWalletLabel: pos.copiedFromWalletLabel,
         convictionScore: pos.alphaScoreAtEntry,
-        action: `TRAILING STOP (+${newPnlPercent}%) - Closed ${pos.tokenSymbol} at $${newPrice}`,
+        action: `TRAILING STOP (${newPnlPercent >= 0 ? '+' : ''}${newPnlPercent}%) - Closed ${pos.tokenSymbol} at $${newPrice}`,
         rationale: `Dynamic trailing stop locked in profit after peak reached +${pos.peakPnlPercent}%. Prevented profit round-trip into loss. Net P&L: +$${newPnlUsd}. Placed on 60m anti-top cooldown.`,
         outcomePnlUsd: newPnlUsd,
         outcomePnlPercent: newPnlPercent,
@@ -1106,12 +1110,19 @@ export async function runCopyBotTick(
         const recentSwaps = await fetchWalletOnChainSwaps(wallet.address, 5);
         const recencyThreshold = Date.now() - maxRecencyMs;
 
-        // Check for fresh on-chain BUY
-        const freshBuy = recentSwaps.find(
+        // Check for fresh on-chain BUY swaps
+        const candidateBuys = recentSwaps.filter(
           (s) => s.action === 'BUY' && s.timestamp >= recencyThreshold && s.tokenAddress !== 'So11111111111111111111111111111111111111112'
         );
 
-        if (freshBuy) {
+        for (const freshBuy of candidateBuys) {
+          if (updatedPositions.length >= portfolio.maxConcurrentPositions || cash < portfolio.allocationPerTradeUsd) break;
+
+          const exitKey = `${wallet.address}:${freshBuy.tokenAddress}:${freshBuy.signature}`;
+          if (knownExitedBuysSet.has(exitKey)) {
+            continue; // Already processed and verified exited; move to next candidate buy
+          }
+
           const alreadyHolding = updatedPositions.some((p) => p.tokenAddress === freshBuy.tokenAddress);
           if (alreadyHolding) continue;
 
@@ -1160,6 +1171,7 @@ export async function runCopyBotTick(
           // Check on-chain holding via Helius RPC
           const holdingStatus = await checkWalletTokenHolding(wallet.address, freshBuy.tokenAddress);
           if (!holdingStatus.isHolding) {
+            knownExitedBuysSet.add(exitKey);
             newLogs.unshift({
               id: `log-skip-sold-${Date.now()}`,
               timestamp: Date.now(),
@@ -1175,7 +1187,7 @@ export async function runCopyBotTick(
               improvementLessonTag: '[AVOIDED_DUMP: POSITION_CLOSED]',
               improvementNote: 'Verified zero token balance on Helius RPC. Capital preserved.',
             });
-            continue;
+            continue; // Continue to next candidate buy for this wallet
           }
 
           // Fetch live spot price and liquidity
@@ -1183,9 +1195,9 @@ export async function runCopyBotTick(
           const spotPrice = priceData.priceUsd > 0 ? priceData.priceUsd : (freshBuy.priceSol ? freshBuy.priceSol * 184 : 0);
 
           if (spotPrice > 0) {
-            // Whale Copy Safety Floor 1: Pool Liquidity >= $15,000
+            // Whale Copy Safety Floor 1: Pool Liquidity >= $25,000 (Prevents pump.fun Raydium migration dumps)
             const poolLiquidity = priceData.liquidityUsd || 0;
-            if (poolLiquidity < 15000) {
+            if (poolLiquidity < 25000) {
               newLogs.unshift({
                 id: `log-skip-liq-${Date.now()}`,
                 timestamp: Date.now(),
@@ -1196,10 +1208,30 @@ export async function runCopyBotTick(
                 triggeredByWallet: wallet.address,
                 triggeredByWalletLabel: wallet.label,
                 convictionScore: 20,
-                action: `SKIPPED ${freshBuy.tokenSymbol}: Liquidity Under $15k ($${Math.round(poolLiquidity).toLocaleString()})`,
-                rationale: `Token pool liquidity ($${Math.round(poolLiquidity).toLocaleString()}) is below the $15,000 safety threshold. Protected against flash crash rugs.`,
+                action: `SKIPPED ${freshBuy.tokenSymbol}: Liquidity Under $25k ($${Math.round(poolLiquidity).toLocaleString()})`,
+                rationale: `Token pool liquidity ($${Math.round(poolLiquidity).toLocaleString()}) is below the $25,000 safety threshold. Protected against pump.fun Raydium migration rugs.`,
                 improvementLessonTag: '[AVOIDED_LOW_LIQUIDITY]',
-                improvementNote: 'Enforced $15k liquidity floor on copy trading.',
+                improvementNote: 'Enforced $25k liquidity floor on copy trading.',
+              });
+              continue;
+            }
+
+            // Whale Copy Safety Floor 1b: Pool Maturation Check (Pool age >= 180s and txns >= 50)
+            if (priceData.pairCreatedAt && (Date.now() - priceData.pairCreatedAt) < 180000 && (priceData.txns24h || 0) < 50) {
+              newLogs.unshift({
+                id: `log-skip-unmature-${Date.now()}`,
+                timestamp: Date.now(),
+                type: 'EVALUATION_REJECT',
+                tokenSymbol: freshBuy.tokenSymbol,
+                tokenAddress: freshBuy.tokenAddress,
+                chain: 'solana',
+                triggeredByWallet: wallet.address,
+                triggeredByWalletLabel: wallet.label,
+                convictionScore: 25,
+                action: `SKIPPED ${freshBuy.tokenSymbol}: Pool Immature (${Math.round((Date.now() - priceData.pairCreatedAt) / 1000)}s old, ${priceData.txns24h || 0} txns)`,
+                rationale: `Pool is under 3 minutes old with fewer than 50 transactions. Protected against sniper-dump traps.`,
+                improvementLessonTag: '[AVOIDED_IMMATURE_POOL]',
+                improvementNote: 'Required pool age >= 180s and >= 50 transactions.',
               });
               continue;
             }
@@ -1316,6 +1348,9 @@ export async function runCopyBotTick(
               improvementLessonTag: '[WIN_OPPORTUNITY: VERIFIED_WHALE_HOLDING]',
               improvementNote: 'Entered alongside whale with confirmed on-chain position.',
             });
+
+            // Enter at most one position per wallet per tick
+            break;
           }
         }
       } catch (err) {
@@ -1660,7 +1695,7 @@ export async function runGemRadarBotTick(
         netPnlPercent: newPnlPercent,
         multiplier: +(newPrice / pos.entryPriceUsd).toFixed(2),
         exitReason: 'TRAILING_STOP',
-        exitReasonDetail: `Trailing Stop Triggered (+${newPnlPercent}%) on Gem Breakout - Locked in gains after peak +${pos.peakPnlPercent}%`,
+        exitReasonDetail: `Trailing Stop Triggered (${newPnlPercent >= 0 ? '+' : ''}${newPnlPercent}%) on Gem Breakout - Locked in gains after peak +${pos.peakPnlPercent}%`,
         peakPriceUsd: pos.peakPriceUsd ?? pos.entryPriceUsd,
         peakPnlPercent: pos.peakPnlPercent ?? Math.max(0, newPnlPercent),
         lowestPriceUsd: pos.lowestPriceUsd ?? pos.entryPriceUsd,
@@ -1681,7 +1716,7 @@ export async function runGemRadarBotTick(
         tokenAddress: pos.tokenAddress,
         chain: 'solana',
         convictionScore: pos.alphaScoreAtEntry,
-        action: `TRAILING STOP (+${newPnlPercent}%) - Closed Gem ${pos.tokenSymbol} at $${newPrice}`,
+        action: `TRAILING STOP (${newPnlPercent >= 0 ? '+' : ''}${newPnlPercent}%) - Closed Gem ${pos.tokenSymbol} at $${newPrice}`,
         rationale: `Dynamic trailing stop locked in profit after breakout peaked at +${pos.peakPnlPercent}%. Prevented profit round-trip into loss. Net P&L: +$${newPnlUsd}. Placed on 60m anti-top cooldown.`,
         outcomePnlUsd: newPnlUsd,
         outcomePnlPercent: newPnlPercent,
@@ -1888,8 +1923,8 @@ export async function runGemRadarBotTick(
           continue;
         }
 
-        // Entry criteria: Confidence >= 80, liquidity depth >= $15k (Strict Floor), valid spot price
-        if (sig.confidenceScore >= 80 && sig.liquidityUsd >= 15000 && sig.priceUsd > 0) {
+        // Entry criteria: Confidence >= 80, liquidity depth >= $25k (Strict Floor), valid spot price
+        if (sig.confidenceScore >= 80 && sig.liquidityUsd >= 25000 && sig.priceUsd > 0) {
           const allocation = portfolio.allocationPerTradeUsd;
           cash = +(cash - allocation).toFixed(2);
           const spotPrice = sig.priceUsd;

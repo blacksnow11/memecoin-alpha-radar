@@ -2,7 +2,7 @@
 // Rate Limit Protection: 60 RPM / 30,000 CUs per Month.
 // All price queries are backed by an in-memory TTL cache (15s) to guarantee zero rate-limit breaches.
 
-const BIRDEYE_API_KEY = process.env.BIRDEYE_API_KEY || '53aff172dddf45c395c4481ee23d6e26';
+const BIRDEYE_API_KEY = process.env.BIRDEYE_API_KEY || '48fdf22fd26b45c698d113519ea8deee';
 const BIRDEYE_BASE_URL = 'https://public-api.birdeye.so';
 
 interface CachedPrice {
@@ -13,6 +13,8 @@ interface CachedPrice {
   volume5m?: number;
   volume1h?: number;
   pairAddress?: string;
+  pairCreatedAt?: number;
+  txns24h?: number;
   timestamp: number;
 }
 
@@ -24,6 +26,8 @@ export interface TokenPriceResult {
   volume5m?: number;
   volume1h?: number;
   pairAddress?: string;
+  pairCreatedAt?: number;
+  txns24h?: number;
   source: 'birdeye' | 'dexscreener' | 'cache';
 }
 
@@ -48,6 +52,8 @@ export async function fetchSolanaTokenPrice(
       volume5m: priceCache[cacheKey].volume5m,
       volume1h: priceCache[cacheKey].volume1h,
       pairAddress: priceCache[cacheKey].pairAddress,
+      pairCreatedAt: priceCache[cacheKey].pairCreatedAt,
+      txns24h: priceCache[cacheKey].txns24h,
       source: 'cache',
     };
   }
@@ -74,6 +80,8 @@ export async function fetchSolanaTokenPrice(
         const existingVol5m = priceCache[cacheKey]?.volume5m || priceCache[mintAddress]?.volume5m;
         const existingVol1h = priceCache[cacheKey]?.volume1h || priceCache[mintAddress]?.volume1h;
         const existingPair = priceCache[cacheKey]?.pairAddress || priceCache[mintAddress]?.pairAddress || pairAddress;
+        const existingCreatedAt = priceCache[cacheKey]?.pairCreatedAt || priceCache[mintAddress]?.pairCreatedAt;
+        const existingTxns = priceCache[cacheKey]?.txns24h || priceCache[mintAddress]?.txns24h;
 
         // Save to cache
         priceCache[cacheKey] = {
@@ -84,6 +92,8 @@ export async function fetchSolanaTokenPrice(
           volume5m: existingVol5m,
           volume1h: existingVol1h,
           pairAddress: existingPair,
+          pairCreatedAt: existingCreatedAt,
+          txns24h: existingTxns,
           timestamp: now,
         };
 
@@ -95,6 +105,8 @@ export async function fetchSolanaTokenPrice(
           volume5m: existingVol5m,
           volume1h: existingVol1h,
           pairAddress: existingPair,
+          pairCreatedAt: existingCreatedAt,
+          txns24h: existingTxns,
           source: 'birdeye',
         };
       }
@@ -129,6 +141,8 @@ export async function fetchSolanaTokenPrice(
         const volume5m = solPair.volume?.m5;
         const volume1h = solPair.volume?.h1;
         const resolvedPairAddress = solPair.pairAddress || pairAddress;
+        const pairCreatedAt = solPair.pairCreatedAt;
+        const txns24h = (solPair.txns?.h24?.buys || 0) + (solPair.txns?.h24?.sells || 0);
 
         priceCache[cacheKey] = {
           priceUsd,
@@ -138,6 +152,8 @@ export async function fetchSolanaTokenPrice(
           volume5m,
           volume1h,
           pairAddress: resolvedPairAddress,
+          pairCreatedAt,
+          txns24h,
           timestamp: now,
         };
 
@@ -149,6 +165,8 @@ export async function fetchSolanaTokenPrice(
           volume5m,
           volume1h,
           pairAddress: resolvedPairAddress,
+          pairCreatedAt,
+          txns24h,
           source: 'dexscreener',
         };
       }
@@ -167,6 +185,8 @@ export async function fetchSolanaTokenPrice(
     volume5m: priceCache[cacheKey]?.volume5m || priceCache[mintAddress]?.volume5m,
     volume1h: priceCache[cacheKey]?.volume1h || priceCache[mintAddress]?.volume1h,
     pairAddress: priceCache[cacheKey]?.pairAddress || pairAddress,
+    pairCreatedAt: priceCache[cacheKey]?.pairCreatedAt || priceCache[mintAddress]?.pairCreatedAt,
+    txns24h: priceCache[cacheKey]?.txns24h || priceCache[mintAddress]?.txns24h,
     source: 'cache',
   };
 }

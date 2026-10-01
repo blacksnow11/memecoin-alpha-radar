@@ -9,7 +9,7 @@ import {
 } from './demo-trading-engine';
 import { DecisionLog, DemoPortfolio, DemoPosition } from './types';
 
-export const CURRENT_STATE_VERSION = 6;
+export const CURRENT_STATE_VERSION = 7;
 
 export interface StoredBotState {
   version?: number;
@@ -102,9 +102,9 @@ export function loadBotStateFromDisk(): StoredBotState {
       const raw = fs.readFileSync(targetFile, 'utf-8');
       const parsed = JSON.parse(raw);
       if (parsed && parsed.copyBot && parsed.gemRadarBot) {
-        // Auto-Migration & Reset: Version 6 resets to pristine clean slate with V2.5 upgrades (High-precision float math, Whale Copy $15k liquidity floor, Trader Performance Circuit Breaker, 30m stagnation recycle)
+        // Auto-Migration & Reset: Version 7 resets to pristine clean slate with V2.6 upgrades ($25k liquidity floor, 3m pool maturation filter, multi-buy evaluation loop, fresh API keys)
         if (!parsed.version || parsed.version < CURRENT_STATE_VERSION) {
-          console.log(`[BotStorage] Auto-migrating state to Version ${CURRENT_STATE_VERSION}: clean-slate reset with V2.5 upgrades`);
+          console.log(`[BotStorage] Auto-migrating state to Version ${CURRENT_STATE_VERSION}: clean-slate reset with V2.6 upgrades ($25k floor, 3m maturation, multi-buy evaluation)`);
           const fresh = getInitialState();
           memoryState = fresh;
           saveBotStateToDisk(fresh);

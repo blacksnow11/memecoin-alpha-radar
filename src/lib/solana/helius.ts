@@ -2,7 +2,7 @@
 // Rate Limit: 10 req/sec, 1M credits per month.
 // Built with strict request pacing, exponential backoff, and in-memory TTL caching.
 
-const HELIUS_API_KEY = process.env.HELIUS_API_KEY || '6cd58ff6-f2ed-43d8-b648-3db0726a6d5c';
+const HELIUS_API_KEY = process.env.HELIUS_API_KEY || '1adbcdca-3605-493c-8b42-e40b6ca0685b';
 const HELIUS_RPC_URL = `https://mainnet.helius-rpc.com/?api-key=${HELIUS_API_KEY}`;
 const PUBLIC_SOLANA_RPC = 'https://api.mainnet-beta.solana.com';
 const HELIUS_API_URL = 'https://api.helius.xyz/v0';
@@ -150,27 +150,42 @@ export async function checkWalletTokenHolding(
       }),
     });
 
-    if (!res.ok) {
-      // Failover to public Solana RPC
-      res = await fetch(PUBLIC_SOLANA_RPC, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          jsonrpc: '2.0',
-          id: 1,
-          method: 'getTokenAccountsByOwner',
-          params: [
-            walletAddress,
-            { mint: tokenMint },
-            { encoding: 'jsonParsed' }
-          ],
-        }),
-      });
+    let data: any = null;
+    if (res.ok) {
+      try {
+        data = await res.json();
+      } catch {
+        data = null;
+      }
     }
 
-    if (res.ok) {
-      const data = await res.json();
-      const accounts = data.result?.value;
+    // Failover to public Solana RPC if Helius request failed or returned RPC error
+    if (!res.ok || !data || data.error || !data.result) {
+      try {
+        const publicRes = await fetch(PUBLIC_SOLANA_RPC, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            method: 'getTokenAccountsByOwner',
+            params: [
+              walletAddress,
+              { mint: tokenMint },
+              { encoding: 'jsonParsed' }
+            ],
+          }),
+        });
+        if (publicRes.ok) {
+          data = await publicRes.json();
+        }
+      } catch {
+        // Fallback gracefully
+      }
+    }
+
+    if (data?.result?.value) {
+      const accounts = data.result.value;
       if (Array.isArray(accounts) && accounts.length > 0) {
         const tokenAmount = accounts[0]?.account?.data?.parsed?.info?.tokenAmount;
         const uiAmount = tokenAmount?.uiAmount || 0;
