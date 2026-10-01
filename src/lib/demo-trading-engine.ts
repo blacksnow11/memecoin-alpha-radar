@@ -1100,8 +1100,11 @@ export async function runCopyBotTick(
     }
 
     const maxRecencyMs = 45 * 60 * 1000; // 45-minute recency window
+    let entriesThisTick = 0;
+    const MAX_COPY_ENTRIES_PER_TICK = 1; // Pacing throttle: max 1 new position per 20s tick
 
     for (const wallet of targetWallets) {
+      if (entriesThisTick >= MAX_COPY_ENTRIES_PER_TICK) break;
       if (updatedPositions.length >= portfolio.maxConcurrentPositions || cash < portfolio.allocationPerTradeUsd) break;
 
       // Trader Performance Circuit Breaker: Skip wallets in cooldown
@@ -1373,6 +1376,8 @@ export async function runCopyBotTick(
               improvementLessonTag: '[WIN_OPPORTUNITY: VERIFIED_WHALE_HOLDING]',
               improvementNote: 'Entered alongside whale with confirmed on-chain position.',
             });
+
+            entriesThisTick++;
 
             // Enter at most one position per wallet per tick
             break;
@@ -1916,8 +1921,11 @@ export async function runGemRadarBotTick(
   if (activePositionCount < portfolio.maxConcurrentPositions && cash >= portfolio.allocationPerTradeUsd) {
     try {
       const liveSignals = await detectPreBreakoutGemSignals();
+      let entriesThisTick = 0;
+      const MAX_GEM_ENTRIES_PER_TICK = 1; // Pacing throttle: max 1 new position per 20s tick
 
       for (const sig of liveSignals) {
+        if (entriesThisTick >= MAX_GEM_ENTRIES_PER_TICK) break;
         if (updatedPositions.length >= portfolio.maxConcurrentPositions || cash < portfolio.allocationPerTradeUsd) break;
 
         const alreadyHolding = updatedPositions.some((p) => p.tokenAddress === sig.tokenAddress);
@@ -2018,6 +2026,8 @@ export async function runGemRadarBotTick(
             improvementLessonTag: '[WIN_OPPORTUNITY: GEM_RADAR_BREAKOUT]',
             improvementNote: 'Sniped live breakout momentum with dynamic trailing stop and breakeven protection.',
           });
+
+          entriesThisTick++;
         }
       }
     } catch (err) {

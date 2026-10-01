@@ -27,8 +27,11 @@ export async function detectPreBreakoutGemSignals(): Promise<PreBreakoutGemSigna
     // Strict Entry Guard 1b: Reject immature pools under 3 minutes old with low activity (< 50 transactions)
     if (token.ageMinutes < 3 && ((token.buyers24h || 0) + (token.sellers24h || 0)) < 50) continue;
 
-    // Strict Entry Guard 1c: Turnover Frenzy Guard - Reject pools under $60k where 5m volume > 1.5x total liquidity (sniper dump trap)
-    if (liquidity < 60000 && volume5m > liquidity * 1.5) continue;
+    // Strict Entry Guard 1c: Turnover Climax Guard - Reject ANY pool where 5m volume > 1.8x total liquidity (climax blow-off top / sniper exit dump)
+    if (liquidity > 0 && volume5m > liquidity * 1.8) continue;
+
+    // Strict Entry Guard 1d: Anti-Falling-Knife Guard - Reject tokens in steep 24h downtrend (down > 15%)
+    if (token.priceChange24h !== undefined && token.priceChange24h < -15) continue;
 
     // Strict Entry Guard 2: Market Cap Ceiling (max $75M) - Filters out mega-caps while allowing high-momentum mid-caps
     if (token.marketCap > 75000000) continue;
@@ -36,9 +39,9 @@ export async function detectPreBreakoutGemSignals(): Promise<PreBreakoutGemSigna
     // Strict Entry Guard 3: Liquidity Pool Ceiling (max $1.5M) - Allows healthy $500k-$1M mid-caps while filtering saturated mega-pools
     if (liquidity > 1500000) continue;
 
-    // Strict Entry Guard 4: Active Trading Velocity Floor - Rejects dead/abandoned zombie pools with zero volume
-    if (volume5m < 500 && volume1h < 3000) continue;
-    if ((token.buyers24h || 0) + (token.sellers24h || 0) < 20) continue;
+    // Strict Entry Guard 4: Active Trading Velocity Floor - Rejects dead/abandoned zombie pools with stagnant volume
+    if (volume5m < 5000 && volume1h < 25000) continue;
+    if ((token.buyers24h || 0) + (token.sellers24h || 0) < 30) continue;
 
     const buyers = token.buyers24h || 0;
     const sellers = token.sellers24h || 1;
@@ -60,7 +63,7 @@ export async function detectPreBreakoutGemSignals(): Promise<PreBreakoutGemSigna
     }));
 
     // Pattern 1: High 5-Minute Volume Velocity Acceleration with Net Buyer Dominance (buyRatio >= 1.20)
-    if ((volume5m >= 1000 || volume1h >= 25000) && buyRatio >= 1.20) {
+    if ((volume5m >= 8000 || volume1h >= 35000) && buyRatio >= 1.20) {
       const velocityScore = Math.min(98, Math.round(75 + (liquidity > 0 ? (volume5m / liquidity) * 20 : 5) + (buyRatio > 1.2 ? 6 : 0)));
       signals.push({
         id: `sig-vel-${token.symbol.toLowerCase()}-${token.address.slice(0, 6)}`,
@@ -90,7 +93,7 @@ export async function detectPreBreakoutGemSignals(): Promise<PreBreakoutGemSigna
     }
 
     // Pattern 2: Ground-Floor Micro-Cap Discovery (< $10M MCap with active volume and healthy buy pressure)
-    if (token.marketCap > 0 && token.marketCap < 10000000 && liquidity >= 15000 && volume5m >= 500 && volume1h >= 2500 && buyRatio >= 1.0) {
+    if (token.marketCap > 0 && token.marketCap < 10000000 && liquidity >= 35000 && volume5m >= 8000 && volume1h >= 25000 && buyRatio >= 1.15) {
       const liquidityRatio = +((liquidity / token.marketCap) * 100).toFixed(1);
       const groundScore = Math.min(95, Math.round(72 + (liquidityRatio > 10 ? 12 : 5) + (token.priceChange24h > 0 ? 8 : 0)));
 
@@ -122,7 +125,7 @@ export async function detectPreBreakoutGemSignals(): Promise<PreBreakoutGemSigna
     }
 
     // Pattern 3: Fresh Pump.fun Migration Momentum with Active Trading
-    if (token.isPumpFun && (volume5m >= 500 || volume1h >= 2500) && buyRatio >= 1.0) {
+    if (token.isPumpFun && volume5m >= 5000 && buyRatio >= 1.15) {
       const pumpScore = Math.min(94, Math.round(78 + (token.priceChange24h > 0 ? 10 : 2)));
       signals.push({
         id: `sig-pump-${token.symbol.toLowerCase()}-${token.address.slice(0, 6)}`,
