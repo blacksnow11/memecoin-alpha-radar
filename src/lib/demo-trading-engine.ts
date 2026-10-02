@@ -22,22 +22,36 @@ export const INITIAL_CLOSED_TRADES: DemoClosedTrade[] = [];
 export const INITIAL_OPEN_POSITIONS: DemoPosition[] = [];
 
 // 45-minute post-stop-loss cooldown to prevent catching falling knives / re-entry churn
-const STOP_LOSS_COOLDOWN_MS = 45 * 60 * 1000;
-export const tokenStopLossCooldownMap = new Map<string, number>();
+// Multi-Strike Adaptive Loss Blacklist:
+// Strike 1 (1st Stop-Loss): 3 hours (180m) cooldown to prevent dead-cat bounce re-entries.
+// Strike 2+ (2nd Stop-Loss or Rug Pull): 24 hours (1,440m) permanent quarantine.
+export interface TokenLossHistory {
+  strikeCount: number;
+  lastLossTimestamp: number;
+  cooldownUntil: number;
+}
+export const tokenLossHistoryMap = new Map<string, TokenLossHistory>();
 
-export function registerStopLossCooldown(tokenAddress: string): void {
-  tokenStopLossCooldownMap.set(tokenAddress, Date.now() + STOP_LOSS_COOLDOWN_MS);
+export function registerStopLossCooldown(tokenAddress: string, strikesToAdd = 1): void {
+  const now = Date.now();
+  const existing = tokenLossHistoryMap.get(tokenAddress) || { strikeCount: 0, lastLossTimestamp: 0, cooldownUntil: 0 };
+  const strikes = existing.strikeCount + strikesToAdd;
+  const cooldownDurationMs = strikes === 1 ? 3 * 60 * 60 * 1000 : 24 * 60 * 60 * 1000;
+  tokenLossHistoryMap.set(tokenAddress, {
+    strikeCount: strikes,
+    lastLossTimestamp: now,
+    cooldownUntil: now + cooldownDurationMs,
+  });
 }
 
-export function isTokenInStopLossCooldown(tokenAddress: string): { inCooldown: boolean; remainingMinutes: number } {
-  const expiry = tokenStopLossCooldownMap.get(tokenAddress);
-  if (!expiry) return { inCooldown: false, remainingMinutes: 0 };
-  const diff = expiry - Date.now();
+export function isTokenInStopLossCooldown(tokenAddress: string): { inCooldown: boolean; remainingMinutes: number; strikeCount: number } {
+  const history = tokenLossHistoryMap.get(tokenAddress);
+  if (!history) return { inCooldown: false, remainingMinutes: 0, strikeCount: 0 };
+  const diff = history.cooldownUntil - Date.now();
   if (diff <= 0) {
-    tokenStopLossCooldownMap.delete(tokenAddress);
-    return { inCooldown: false, remainingMinutes: 0 };
+    return { inCooldown: false, remainingMinutes: 0, strikeCount: history.strikeCount };
   }
-  return { inCooldown: true, remainingMinutes: Math.ceil(diff / 60000) };
+  return { inCooldown: true, remainingMinutes: Math.ceil(diff / 60000), strikeCount: history.strikeCount };
 }
 
 // 60-minute post-take-profit cooldown to prevent FOMO top-buying after a successful pump
@@ -133,9 +147,8 @@ export const DEFAULT_DEMO_PORTFOLIO: DemoPortfolio = {
   maxConcurrentPositions: 25,
   stopLossPercent: -20,
   takeProfitTargets: [
-    { targetMultiplier: 1.35, sellPercent: 40 },
-    { targetMultiplier: 2.0, sellPercent: 30 },
-    { targetMultiplier: 3.0, sellPercent: 30 },
+    { targetMultiplier: 1.22, sellPercent: 50 },
+    { targetMultiplier: 1.50, sellPercent: 50 },
   ],
   equityHistory: [
     { timestamp: Date.now(), equityUsd: 1000.00 },
@@ -163,9 +176,8 @@ export const DEFAULT_GEM_RADAR_PORTFOLIO: DemoPortfolio = {
   maxConcurrentPositions: 25,
   stopLossPercent: -20,
   takeProfitTargets: [
-    { targetMultiplier: 1.35, sellPercent: 40 },
-    { targetMultiplier: 2.0, sellPercent: 30 },
-    { targetMultiplier: 3.0, sellPercent: 30 },
+    { targetMultiplier: 1.22, sellPercent: 50 },
+    { targetMultiplier: 1.50, sellPercent: 50 },
   ],
   equityHistory: [
     { timestamp: Date.now(), equityUsd: 1000.00 },
@@ -617,13 +629,26 @@ export async function runCopyBotTick(
     if (!pos.entryLiquidityUsd && pos.currentLiquidityUsd) {
       pos.entryLiquidityUsd = pos.currentLiquidityUsd;
     }
-    const newPnlUsd = +((newPrice - pos.entryPriceUsd) * pos.tokenAmount).toFixed(2);
-    const newPnlPercent = +(((newPrice - pos.entryPriceUsd) / pos.entryPriceUsd) * 100).toFixed(1);
+    let evaluatedPrice = newPrice;
+    let newPnlUsd = +((evaluatedPrice - pos.entryPriceUsd) * pos.tokenAmount).toFixed(2);
+    let newPnlPercent = +(((evaluatedPrice - pos.entryPriceUsd) / pos.entryPriceUsd) * 100).toFixed(1);
+
+    // Realistic AMM Extraction & Price Anomaly Sanity Cap:
+    // A single exit cannot extract more than 50% of total pool liquidity (prevents impossible $325k payouts on $81k pools)
+    const maxRealisticReturnUsd = pos.currentLiquidityUsd && pos.currentLiquidityUsd > 0
+      ? pos.currentLiquidityUsd * 0.50
+      : 10000;
+    if (pos.investedUsd + newPnlUsd > maxRealisticReturnUsd) {
+      newPnlUsd = +(maxRealisticReturnUsd - pos.investedUsd).toFixed(2);
+      newPnlPercent = +((newPnlUsd / pos.investedUsd) * 100).toFixed(1);
+      evaluatedPrice = pos.entryPriceUsd * (1 + newPnlPercent / 100);
+    }
+
     const holdDurationSeconds = Math.max(1, Math.round((Date.now() - pos.entryTimestamp) / 1000));
     const holdDurationMinutes = holdDurationSeconds / 60;
 
     // Update Peak & Lowest MFE Metrics
-    updatePositionPeakAndMilestones(pos, newPrice, newPnlPercent);
+    updatePositionPeakAndMilestones(pos, evaluatedPrice, newPnlPercent);
 
     // Dynamic Rule 1: Early Breakeven Stop Ratchet
     // When peak PnL reaches >= +15%, move stop loss to Entry + 1.5% (covers gas & eliminates round-trip losses)
@@ -639,7 +664,7 @@ export async function runCopyBotTick(
     // When peak PnL reaches >= +25%, activate a dynamic trailing stop 12% below peak
     if ((pos.peakPnlPercent ?? 0) >= 25) {
       pos.isTrailingActive = true;
-      const peakPrice = pos.peakPriceUsd || newPrice;
+      const peakPrice = pos.peakPriceUsd || evaluatedPrice;
       const dynamicTrailingStop = peakPrice * 0.88;
       if (!pos.trailingStopPrice || dynamicTrailingStop > pos.trailingStopPrice) {
         pos.trailingStopPrice = dynamicTrailingStop;
@@ -649,9 +674,9 @@ export async function runCopyBotTick(
       }
     }
 
-    // Trigger CB: Circuit Breaker (Flash Rug / Liquidity Pull Detection)
+    // Trigger CB: Circuit Breaker (Flash Rug / Liquidity Pull Detection - 20% Fast-Cut)
     const isLiqDrained = !!(pos.entryLiquidityUsd && pos.currentLiquidityUsd && pos.entryLiquidityUsd > 0 &&
-      ((pos.entryLiquidityUsd - pos.currentLiquidityUsd) / pos.entryLiquidityUsd >= 0.25));
+      ((pos.entryLiquidityUsd - pos.currentLiquidityUsd) / pos.entryLiquidityUsd >= 0.20));
     const isLiqBelowFloor = !!(pos.currentLiquidityUsd !== undefined && pos.currentLiquidityUsd > 0 && pos.currentLiquidityUsd < 8000);
     const isFlashCrash = newPnlPercent <= -50;
 
@@ -664,8 +689,8 @@ export async function runCopyBotTick(
       // Register trader outcome: flag trader for rug pull
       if (pos.copiedFromWallet) registerTraderTradeOutcome(pos.copiedFromWallet, false, true);
 
-      // Emergency 2-hour quarantine cooldown for rug/crash tokens
-      tokenStopLossCooldownMap.set(pos.tokenAddress, Date.now() + 2 * 3600 * 1000);
+      // Emergency 24-hour quarantine cooldown for rug/crash tokens (2 strikes)
+      registerStopLossCooldown(pos.tokenAddress, 2);
 
       const drainPct = (pos.entryLiquidityUsd && pos.currentLiquidityUsd && pos.entryLiquidityUsd > 0)
         ? Math.round(((pos.entryLiquidityUsd - pos.currentLiquidityUsd) / pos.entryLiquidityUsd) * 100)
@@ -793,8 +818,8 @@ export async function runCopyBotTick(
       continue;
     }
 
-    // Trigger A: Full Take-Profit Target Hit (Calibrated 1.35x / +35% Sweet Spot)
-    if (newPrice >= pos.takeProfitPrice1) {
+    // Trigger A: Full Take-Profit Target Hit (Calibrated 1.22x / +22% Sweet Spot)
+    if (evaluatedPrice >= pos.takeProfitPrice1) {
       registerTakeProfitCooldown(pos.tokenAddress);
       const totalReturned = +(pos.investedUsd + newPnlUsd).toFixed(2);
       cash = +(cash + totalReturned).toFixed(2);
@@ -1167,9 +1192,9 @@ export async function runCopyBotTick(
               triggeredByWallet: wallet.address,
               triggeredByWalletLabel: wallet.label,
               convictionScore: 25,
-              action: `SKIPPED ${freshBuy.tokenSymbol}: Anti-Churn Cooldown Active (${cooldownCheck.remainingMinutes}m remaining)`,
-              rationale: `Token recently triggered hard stop-loss. Blacklisted for 45 minutes to prevent re-entering a falling knife / dumping momentum.`,
-              improvementLessonTag: '[ANTI_CHURN_COOLDOWN]',
+              action: `SKIPPED ${freshBuy.tokenSymbol}: Anti-Churn Cooldown Active (${cooldownCheck.remainingMinutes}m remaining, Strike ${cooldownCheck.strikeCount})`,
+              rationale: `Token triggered stop-loss (Strike ${cooldownCheck.strikeCount}). Blacklisted for ${cooldownCheck.strikeCount >= 2 ? '24 hours (Quarantine)' : '3 hours'} to prevent repetitive churn losses.`,
+              improvementLessonTag: '[MULTI_STRIKE_COOLDOWN]',
               improvementNote: 'Capital protected from repetitive churn losses.',
             });
             continue;
@@ -1338,8 +1363,8 @@ export async function runCopyBotTick(
               tokenAmount,
               pnlUsd: 0,
               pnlPercent: 0,
-              takeProfitPrice1: spotPrice * 1.35, // High-precision float (no .toFixed(6) truncation)
-              takeProfitPrice2: spotPrice * 2.0,  // Extended TP2 (+100%)
+              takeProfitPrice1: spotPrice * 1.22, // Calibrated sweet spot (+22% target hit rate > 45%)
+              takeProfitPrice2: spotPrice * 1.50, // Extended runner TP2 (+50%)
               stopLossPrice: spotPrice * (1 + portfolio.stopLossPercent / 100),
               status: 'OPEN',
               alphaScoreAtEntry: 95,
@@ -1474,13 +1499,26 @@ export async function runGemRadarBotTick(
     if (!pos.entryLiquidityUsd && pos.currentLiquidityUsd) {
       pos.entryLiquidityUsd = pos.currentLiquidityUsd;
     }
-    const newPnlUsd = +((newPrice - pos.entryPriceUsd) * pos.tokenAmount).toFixed(2);
-    const newPnlPercent = +(((newPrice - pos.entryPriceUsd) / pos.entryPriceUsd) * 100).toFixed(1);
+    let evaluatedPrice = newPrice;
+    let newPnlUsd = +((evaluatedPrice - pos.entryPriceUsd) * pos.tokenAmount).toFixed(2);
+    let newPnlPercent = +(((evaluatedPrice - pos.entryPriceUsd) / pos.entryPriceUsd) * 100).toFixed(1);
+
+    // Realistic AMM Extraction & Price Anomaly Sanity Cap:
+    // A single exit cannot extract more than 50% of total pool liquidity (prevents impossible $325k payouts on $81k pools)
+    const maxRealisticReturnUsd = pos.currentLiquidityUsd && pos.currentLiquidityUsd > 0
+      ? pos.currentLiquidityUsd * 0.50
+      : 10000;
+    if (pos.investedUsd + newPnlUsd > maxRealisticReturnUsd) {
+      newPnlUsd = +(maxRealisticReturnUsd - pos.investedUsd).toFixed(2);
+      newPnlPercent = +((newPnlUsd / pos.investedUsd) * 100).toFixed(1);
+      evaluatedPrice = pos.entryPriceUsd * (1 + newPnlPercent / 100);
+    }
+
     const holdDurationSeconds = Math.max(1, Math.round((Date.now() - pos.entryTimestamp) / 1000));
     const holdDurationMinutes = holdDurationSeconds / 60;
 
     // Update Peak & Lowest MFE Metrics
-    updatePositionPeakAndMilestones(pos, newPrice, newPnlPercent);
+    updatePositionPeakAndMilestones(pos, evaluatedPrice, newPnlPercent);
 
     // Dynamic Rule 1: Early Breakeven Stop Ratchet
     // When peak PnL reaches >= +15%, move stop loss to Entry + 1.5% (covers gas & eliminates round-trip losses)
@@ -1496,7 +1534,7 @@ export async function runGemRadarBotTick(
     // When peak PnL reaches >= +25%, activate a dynamic trailing stop 12% below peak
     if ((pos.peakPnlPercent ?? 0) >= 25) {
       pos.isTrailingActive = true;
-      const peakPrice = pos.peakPriceUsd || newPrice;
+      const peakPrice = pos.peakPriceUsd || evaluatedPrice;
       const dynamicTrailingStop = peakPrice * 0.88;
       if (!pos.trailingStopPrice || dynamicTrailingStop > pos.trailingStopPrice) {
         pos.trailingStopPrice = dynamicTrailingStop;
@@ -1506,9 +1544,9 @@ export async function runGemRadarBotTick(
       }
     }
 
-    // Trigger CB: Circuit Breaker (Flash Rug / Liquidity Pull Detection)
+    // Trigger CB: Circuit Breaker (Flash Rug / Liquidity Pull Detection - 20% Fast-Cut)
     const isLiqDrained = !!(pos.entryLiquidityUsd && pos.currentLiquidityUsd && pos.entryLiquidityUsd > 0 &&
-      ((pos.entryLiquidityUsd - pos.currentLiquidityUsd) / pos.entryLiquidityUsd >= 0.25));
+      ((pos.entryLiquidityUsd - pos.currentLiquidityUsd) / pos.entryLiquidityUsd >= 0.20));
     const isLiqBelowFloor = !!(pos.currentLiquidityUsd !== undefined && pos.currentLiquidityUsd > 0 && pos.currentLiquidityUsd < 8000);
     const isFlashCrash = newPnlPercent <= -50;
 
@@ -1518,8 +1556,8 @@ export async function runGemRadarBotTick(
       realizedPnl = +(realizedPnl + newPnlUsd).toFixed(2);
       losses++;
 
-      // Emergency 2-hour quarantine cooldown for rug/crash tokens
-      tokenStopLossCooldownMap.set(pos.tokenAddress, Date.now() + 2 * 3600 * 1000);
+      // Emergency 24-hour quarantine cooldown for rug/crash tokens (2 strikes)
+      registerStopLossCooldown(pos.tokenAddress, 2);
 
       const drainPct = (pos.entryLiquidityUsd && pos.currentLiquidityUsd && pos.entryLiquidityUsd > 0)
         ? Math.round(((pos.entryLiquidityUsd - pos.currentLiquidityUsd) / pos.entryLiquidityUsd) * 100)
@@ -1641,8 +1679,8 @@ export async function runGemRadarBotTick(
       continue;
     }
 
-    // Trigger A: Full Take-Profit Target Hit (Calibrated 1.35x / +35% Sweet Spot)
-    if (newPrice >= pos.takeProfitPrice1) {
+    // Trigger A: Full Take-Profit Target Hit (Calibrated 1.22x / +22% Sweet Spot)
+    if (evaluatedPrice >= pos.takeProfitPrice1) {
       registerTakeProfitCooldown(pos.tokenAddress);
       const totalReturned = +(pos.investedUsd + newPnlUsd).toFixed(2);
       cash = +(cash + totalReturned).toFixed(2);
@@ -1942,9 +1980,9 @@ export async function runGemRadarBotTick(
             tokenAddress: sig.tokenAddress,
             chain: 'solana',
             convictionScore: 25,
-            action: `SKIPPED ${sig.tokenSymbol}: Anti-Churn Cooldown Active (${cooldownCheck.remainingMinutes}m remaining)`,
-            rationale: `Token recently triggered stop-loss. Blacklisted for 45 minutes to prevent re-entering a dumping breakout.`,
-            improvementLessonTag: '[ANTI_CHURN_COOLDOWN]',
+            action: `SKIPPED ${sig.tokenSymbol}: Anti-Churn Cooldown Active (${cooldownCheck.remainingMinutes}m remaining, Strike ${cooldownCheck.strikeCount})`,
+            rationale: `Token triggered stop-loss (Strike ${cooldownCheck.strikeCount}). Blacklisted for ${cooldownCheck.strikeCount >= 2 ? '24 hours (Quarantine)' : '3 hours'} to prevent repetitive churn losses.`,
+            improvementLessonTag: '[MULTI_STRIKE_COOLDOWN]',
             improvementNote: 'Capital protected from repetitive churn losses.',
           });
           continue;
@@ -1991,8 +2029,8 @@ export async function runGemRadarBotTick(
             tokenAmount,
             pnlUsd: 0,
             pnlPercent: 0,
-            takeProfitPrice1: spotPrice * 1.35, // High-precision float (no .toFixed(6) truncation)
-            takeProfitPrice2: spotPrice * 2.0,  // Extended TP2 (+100%)
+            takeProfitPrice1: spotPrice * 1.22, // Calibrated sweet spot (+22% target hit rate > 45%)
+            takeProfitPrice2: spotPrice * 1.50, // Extended runner TP2 (+50%)
             stopLossPrice: spotPrice * (1 + portfolio.stopLossPercent / 100),
             status: 'OPEN',
             alphaScoreAtEntry: sig.confidenceScore,

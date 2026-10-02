@@ -74,41 +74,48 @@ export async function fetchSolanaTokenPrice(
       const data = await res.json();
       if (data.success && data.data && typeof data.data.value === 'number') {
         const priceUsd = data.data.value;
-        const priceChange24h = data.data.priceChange24h || 0;
-        const existingLiquidity = priceCache[cacheKey]?.liquidityUsd || priceCache[mintAddress]?.liquidityUsd;
-        const existingMarketCap = priceCache[cacheKey]?.marketCapUsd || priceCache[mintAddress]?.marketCapUsd;
-        const existingVol5m = priceCache[cacheKey]?.volume5m || priceCache[mintAddress]?.volume5m;
-        const existingVol1h = priceCache[cacheKey]?.volume1h || priceCache[mintAddress]?.volume1h;
-        const existingPair = priceCache[cacheKey]?.pairAddress || priceCache[mintAddress]?.pairAddress || pairAddress;
-        const existingCreatedAt = priceCache[cacheKey]?.pairCreatedAt || priceCache[mintAddress]?.pairCreatedAt;
-        const existingTxns = priceCache[cacheKey]?.txns24h || priceCache[mintAddress]?.txns24h;
+        const lastCachedPrice = priceCache[cacheKey]?.priceUsd || priceCache[mintAddress]?.priceUsd;
 
-        // Save to cache
-        priceCache[cacheKey] = {
-          priceUsd,
-          priceChange24h,
-          liquidityUsd: existingLiquidity,
-          marketCapUsd: existingMarketCap,
-          volume5m: existingVol5m,
-          volume1h: existingVol1h,
-          pairAddress: existingPair,
-          pairCreatedAt: existingCreatedAt,
-          txns24h: existingTxns,
-          timestamp: now,
-        };
+        // Anti-Glitch Sanity Guard: If Birdeye price jumps > 8x from cached price, cross-validate with DexScreener
+        if (lastCachedPrice && lastCachedPrice > 0 && priceUsd / lastCachedPrice > 8) {
+          console.warn(`[Birdeye] Extreme price jump detected on ${mintAddress} ($${lastCachedPrice} -> $${priceUsd}). Falling back to DexScreener for cross-validation.`);
+        } else {
+          const priceChange24h = data.data.priceChange24h || 0;
+          const existingLiquidity = priceCache[cacheKey]?.liquidityUsd || priceCache[mintAddress]?.liquidityUsd;
+          const existingMarketCap = priceCache[cacheKey]?.marketCapUsd || priceCache[mintAddress]?.marketCapUsd;
+          const existingVol5m = priceCache[cacheKey]?.volume5m || priceCache[mintAddress]?.volume5m;
+          const existingVol1h = priceCache[cacheKey]?.volume1h || priceCache[mintAddress]?.volume1h;
+          const existingPair = priceCache[cacheKey]?.pairAddress || priceCache[mintAddress]?.pairAddress || pairAddress;
+          const existingCreatedAt = priceCache[cacheKey]?.pairCreatedAt || priceCache[mintAddress]?.pairCreatedAt;
+          const existingTxns = priceCache[cacheKey]?.txns24h || priceCache[mintAddress]?.txns24h;
 
-        return {
-          priceUsd,
-          priceChange24h,
-          liquidityUsd: existingLiquidity,
-          marketCapUsd: existingMarketCap,
-          volume5m: existingVol5m,
-          volume1h: existingVol1h,
-          pairAddress: existingPair,
-          pairCreatedAt: existingCreatedAt,
-          txns24h: existingTxns,
-          source: 'birdeye',
-        };
+          // Save to cache
+          priceCache[cacheKey] = {
+            priceUsd,
+            priceChange24h,
+            liquidityUsd: existingLiquidity,
+            marketCapUsd: existingMarketCap,
+            volume5m: existingVol5m,
+            volume1h: existingVol1h,
+            pairAddress: existingPair,
+            pairCreatedAt: existingCreatedAt,
+            txns24h: existingTxns,
+            timestamp: now,
+          };
+
+          return {
+            priceUsd,
+            priceChange24h,
+            liquidityUsd: existingLiquidity,
+            marketCapUsd: existingMarketCap,
+            volume5m: existingVol5m,
+            volume1h: existingVol1h,
+            pairAddress: existingPair,
+            pairCreatedAt: existingCreatedAt,
+            txns24h: existingTxns,
+            source: 'birdeye',
+          };
+        }
       }
     }
   } catch (err) {
