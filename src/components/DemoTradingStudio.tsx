@@ -832,6 +832,34 @@ export function DemoTradingStudio({
             </div>
           </div>
         </div>
+
+        {/* Real-Time Risk & Exposure Telemetry Bar */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-slate-900/80 p-3 rounded-xl border border-cyber-border/70 text-xs">
+          <div className="flex flex-col sm:flex-row sm:items-center space-y-0.5 sm:space-y-0 sm:space-x-2">
+            <span className="text-slate-400 text-[11px]">Peak Equity:</span>
+            <span className="font-mono font-bold text-emerald-400">
+              ${(portfolio.peakEquityUsd || portfolio.totalEquityUsd).toFixed(2)}
+            </span>
+          </div>
+          <div className="flex flex-col sm:flex-row sm:items-center space-y-0.5 sm:space-y-0 sm:space-x-2">
+            <span className="text-slate-400 text-[11px]">Max Drawdown:</span>
+            <span className="font-mono font-bold text-amber-400">
+              -${(portfolio.maxDrawdownUsd || 0).toFixed(2)} ({(portfolio.maxDrawdownPercent || 0).toFixed(2)}%)
+            </span>
+          </div>
+          <div className="flex flex-col sm:flex-row sm:items-center space-y-0.5 sm:space-y-0 sm:space-x-2">
+            <span className="text-slate-400 text-[11px]">Max Simultaneous Trades:</span>
+            <span className="font-mono font-bold text-cyber-accent">
+              {portfolio.maxSimultaneousPositionsObserved || openPositions.length} positions
+            </span>
+          </div>
+          <div className="flex flex-col sm:flex-row sm:items-center space-y-0.5 sm:space-y-0 sm:space-x-2">
+            <span className="text-slate-400 text-[11px]">Concurrency Limit:</span>
+            <span className="font-mono text-slate-300">
+              Max {portfolio.maxConcurrentPositions} (1 entry/tick)
+            </span>
+          </div>
+        </div>
       </div>
 
       {/* Mathematical Equity Reconciliation Box (Proof of Zero Double-Counting / Zero Inflation) */}

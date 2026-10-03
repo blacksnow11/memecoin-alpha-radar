@@ -260,6 +260,10 @@ export interface DemoPortfolio {
   takeProfitTargets: Array<{ targetMultiplier: number; sellPercent: number }>;
   equityHistory: Array<{ timestamp: number; equityUsd: number }>;
   closedTrades: DemoClosedTrade[];
+  maxSimultaneousPositionsObserved?: number;
+  peakEquityUsd?: number;
+  maxDrawdownUsd?: number;
+  maxDrawdownPercent?: number;
 }
 
 export interface DecisionLog {
