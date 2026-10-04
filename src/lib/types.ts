@@ -264,6 +264,25 @@ export interface DemoPortfolio {
   peakEquityUsd?: number;
   maxDrawdownUsd?: number;
   maxDrawdownPercent?: number;
+  // V3.2 Institutional Risk Budgeting & Sleep Protection
+  sizingMode?: 'FIXED' | 'DYNAMIC_RISK_BUDGET';
+  riskDivisor?: number; // e.g. 12 (5 max concurrency + 4 drawdown buffer + 2 safety cushion)
+  dynamicAllocationUsd?: number;
+  tradingHoursMode?: 'ALL_HOURS' | 'ACTIVE_HOURS_ONLY' | 'CUSTOM';
+  activeHoursStartUtc?: number; // e.g. 13.5 (13:30 UTC)
+  activeHoursEndUtc?: number; // e.g. 22.0 (22:00 UTC)
+}
+
+export interface HourlyPerformanceStat {
+  hourUtc: number;
+  totalTrades: number;
+  wins: number;
+  losses: number;
+  winRatePercent: number;
+  netPnlUsd: number;
+  avgWinUsd: number;
+  avgLossUsd: number;
+  isPeakSession: boolean;
 }
 
 export interface DecisionLog {

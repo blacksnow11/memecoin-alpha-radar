@@ -9,7 +9,7 @@ import {
 } from './demo-trading-engine';
 import { DecisionLog, DemoPortfolio, DemoPosition } from './types';
 
-export const CURRENT_STATE_VERSION = 12;
+export const CURRENT_STATE_VERSION = 13;
 
 export interface StoredBotState {
   version?: number;

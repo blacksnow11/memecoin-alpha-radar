@@ -4,6 +4,7 @@ import {
   DemoClosedTrade,
   DemoPortfolio,
   DemoPosition,
+  HourlyPerformanceStat,
   MilestoneRate,
   PeriodicPnlSummary,
   PreBreakoutGemSignal,
@@ -21,9 +22,8 @@ import { detectPreBreakoutGemSignals } from './solana/gem-radar';
 export const INITIAL_CLOSED_TRADES: DemoClosedTrade[] = [];
 export const INITIAL_OPEN_POSITIONS: DemoPosition[] = [];
 
-// 45-minute post-stop-loss cooldown to prevent catching falling knives / re-entry churn
 // Multi-Strike Adaptive Loss Blacklist:
-// Strike 1 (1st Stop-Loss): 3 hours (180m) cooldown to prevent dead-cat bounce re-entries.
+// Strike 1 (1st Stop-Loss): 6 hours (360m) cooldown to prevent dead-cat bounce re-entries (upgraded from 3h).
 // Strike 2+ (2nd Stop-Loss or Rug Pull): 24 hours (1,440m) permanent quarantine.
 export interface TokenLossHistory {
   strikeCount: number;
@@ -36,7 +36,7 @@ export function registerStopLossCooldown(tokenAddress: string, strikesToAdd = 1)
   const now = Date.now();
   const existing = tokenLossHistoryMap.get(tokenAddress) || { strikeCount: 0, lastLossTimestamp: 0, cooldownUntil: 0 };
   const strikes = existing.strikeCount + strikesToAdd;
-  const cooldownDurationMs = strikes === 1 ? 3 * 60 * 60 * 1000 : 24 * 60 * 60 * 1000;
+  const cooldownDurationMs = strikes === 1 ? 6 * 60 * 60 * 1000 : 24 * 60 * 60 * 1000;
   tokenLossHistoryMap.set(tokenAddress, {
     strikeCount: strikes,
     lastLossTimestamp: now,
@@ -54,8 +54,8 @@ export function isTokenInStopLossCooldown(tokenAddress: string): { inCooldown: b
   return { inCooldown: true, remainingMinutes: Math.ceil(diff / 60000), strikeCount: history.strikeCount };
 }
 
-// 60-minute post-take-profit cooldown to prevent FOMO top-buying after a successful pump
-const TAKE_PROFIT_COOLDOWN_MS = 60 * 60 * 1000;
+// 6-hour post-cycle quarantine to prevent FOMO top-buying and repeat cycle churn (e.g. POOPYBOT)
+const TAKE_PROFIT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 export const tokenTakeProfitCooldownMap = new Map<string, number>();
 
 export function registerTakeProfitCooldown(tokenAddress: string): void {
@@ -71,6 +71,87 @@ export function isTokenInTakeProfitCooldown(tokenAddress: string): { inCooldown:
     return { inCooldown: false, remainingMinutes: 0 };
   }
   return { inCooldown: true, remainingMinutes: Math.ceil(diff / 60000) };
+}
+
+// Active Trading Hours / Sleep Protection Guard
+// Restricts opening NEW positions outside high-liquidity market hours (13:30 to 22:00 UTC)
+// Open positions are continuously managed with full trailing stops and circuit breakers.
+export const lastSleepProtectionLogMap = new Map<string, number>();
+
+export function isWithinActiveTradingHours(portfolio: DemoPortfolio): { allowed: boolean; currentUtcTime: string; reason?: string } {
+  const now = new Date();
+  const utcDecimal = now.getUTCHours() + now.getUTCMinutes() / 60;
+  const currentUtcTime = `${String(now.getUTCHours()).padStart(2, '0')}:${String(now.getUTCMinutes()).padStart(2, '0')} UTC`;
+
+  if (portfolio.tradingHoursMode === 'ALL_HOURS') {
+    return { allowed: true, currentUtcTime };
+  }
+
+  const start = portfolio.activeHoursStartUtc ?? 13.5; // 13:30 UTC
+  const end = portfolio.activeHoursEndUtc ?? 22.0;     // 22:00 UTC
+
+  if (utcDecimal >= start && utcDecimal <= end) {
+    return { allowed: true, currentUtcTime };
+  }
+
+  return {
+    allowed: false,
+    currentUtcTime,
+    reason: `Sleep Protection Active (${currentUtcTime} is outside active market window 13:30-22:00 UTC). Overnight bid liquidity is thin; new entries paused to prevent predatory dev dumps and gap slippage.`,
+  };
+}
+
+// Dynamic Risk-Partitioned Sizing Formula (The 12-Slot Divisor)
+// Sizing = Account Balance / 12 (5 max concurrency + 4 drawdown buffer + 2 safety cushion)
+export function calculateTradeAllocation(portfolio: DemoPortfolio): number {
+  if (portfolio.sizingMode === 'DYNAMIC_RISK_BUDGET') {
+    const divisor = Math.max(1, portfolio.riskDivisor || 12);
+    const baseEquity = portfolio.totalEquityUsd > 0 ? portfolio.totalEquityUsd : portfolio.startingCash;
+    const computed = Math.round(baseEquity / divisor);
+    return Math.max(1, Math.min(computed, portfolio.currentCash));
+  }
+  return Math.max(1, Math.min(portfolio.allocationPerTradeUsd, portfolio.currentCash));
+}
+
+// Computes live hourly performance analytics across all 24 UTC hours
+export function computeHourlyPerformanceStats(closedTrades: DemoClosedTrade[]): HourlyPerformanceStat[] {
+  const hourlyMap: Record<number, { wins: number; losses: number; netPnl: number; winnersPnl: number; losersPnl: number }> = {};
+  for (let h = 0; h < 24; h++) {
+    hourlyMap[h] = { wins: 0, losses: 0, netPnl: 0, winnersPnl: 0, losersPnl: 0 };
+  }
+
+  for (const trade of closedTrades) {
+    const d = new Date(trade.entryTimestamp);
+    const hour = d.getUTCHours();
+    const pnl = trade.netPnlUsd || 0;
+    if (pnl > 0) {
+      hourlyMap[hour].wins++;
+      hourlyMap[hour].winnersPnl += pnl;
+    } else {
+      hourlyMap[hour].losses++;
+      hourlyMap[hour].losersPnl += pnl;
+    }
+    hourlyMap[hour].netPnl += pnl;
+  }
+
+  const stats: HourlyPerformanceStat[] = [];
+  for (let h = 0; h < 24; h++) {
+    const data = hourlyMap[h];
+    const total = data.wins + data.losses;
+    const isPeak = h >= 14 && h <= 21;
+    stats.push({
+      hourUtc: h,
+      totalTrades: total,
+      wins: data.wins,
+      losses: data.losses,
+      winRatePercent: total > 0 ? +((data.wins / total) * 100).toFixed(1) : 0,
+      netPnlUsd: +data.netPnl.toFixed(2),
+      avgWinUsd: data.wins > 0 ? +(data.winnersPnl / data.wins).toFixed(2) : 0,
+      avgLossUsd: data.losses > 0 ? +(data.losersPnl / data.losses).toFixed(2) : 0,
+      isPeakSession: isPeak,
+    });
+  }
+  return stats;
 }
 
 // Trader Performance Circuit Breaker: blacklist copied trader for 2 hours if 2 consecutive losses or rug pull
@@ -127,7 +208,7 @@ export const STANDARD_PROFIT_MILESTONES = [
   { percent: 200, label: '+200% (3x Runner)' },
 ];
 
-// Portfolio 1: Smart Money Copy-Trade Bot ($1,000 Starting Cash, 25 Concurrent Positions)
+// Portfolio 1: Smart Money Copy-Trade Bot ($1,000 Starting Cash, 5 Concurrent Positions, 12-Slot Risk Divisor)
 export const DEFAULT_DEMO_PORTFOLIO: DemoPortfolio = {
   startingCash: 1000.00,
   currentCash: 1000.00,
@@ -143,8 +224,8 @@ export const DEFAULT_DEMO_PORTFOLIO: DemoPortfolio = {
   isAutoReloadEnabled: true,
   isBotRunning: true,
   minConvictionThreshold: 80,
-  allocationPerTradeUsd: 20,
-  maxConcurrentPositions: 25,
+  allocationPerTradeUsd: 83,
+  maxConcurrentPositions: 5,
   stopLossPercent: -20,
   takeProfitTargets: [
     { targetMultiplier: 1.22, sellPercent: 50 },
@@ -158,9 +239,15 @@ export const DEFAULT_DEMO_PORTFOLIO: DemoPortfolio = {
   peakEquityUsd: 1000.00,
   maxDrawdownUsd: 0.00,
   maxDrawdownPercent: 0.00,
+  sizingMode: 'DYNAMIC_RISK_BUDGET',
+  riskDivisor: 12,
+  dynamicAllocationUsd: 83,
+  tradingHoursMode: 'ACTIVE_HOURS_ONLY',
+  activeHoursStartUtc: 13.5,
+  activeHoursEndUtc: 22.0,
 };
 
-// Portfolio 2: Gem Radar Breakout Hunter Bot ($1,000 Starting Cash, 25 Concurrent Positions)
+// Portfolio 2: Gem Radar Breakout Hunter Bot ($1,000 Starting Cash, 5 Concurrent Positions, 12-Slot Risk Divisor)
 export const DEFAULT_GEM_RADAR_PORTFOLIO: DemoPortfolio = {
   startingCash: 1000.00,
   currentCash: 1000.00,
@@ -176,8 +263,8 @@ export const DEFAULT_GEM_RADAR_PORTFOLIO: DemoPortfolio = {
   isAutoReloadEnabled: true,
   isBotRunning: true,
   minConvictionThreshold: 80,
-  allocationPerTradeUsd: 20,
-  maxConcurrentPositions: 25,
+  allocationPerTradeUsd: 83,
+  maxConcurrentPositions: 5,
   stopLossPercent: -20,
   takeProfitTargets: [
     { targetMultiplier: 1.22, sellPercent: 50 },
@@ -191,6 +278,12 @@ export const DEFAULT_GEM_RADAR_PORTFOLIO: DemoPortfolio = {
   peakEquityUsd: 1000.00,
   maxDrawdownUsd: 0.00,
   maxDrawdownPercent: 0.00,
+  sizingMode: 'DYNAMIC_RISK_BUDGET',
+  riskDivisor: 12,
+  dynamicAllocationUsd: 83,
+  tradingHoursMode: 'ACTIVE_HOURS_ONLY',
+  activeHoursStartUtc: 13.5,
+  activeHoursEndUtc: 22.0,
 };
 
 // Clean-slate Initial Decision Logs
@@ -1116,14 +1209,37 @@ export async function runCopyBotTick(
 
   // 2. Real Whale Copy Evaluation: Scan tracked alpha whales for genuine recent buys
   const activePositionCount = updatedPositions.filter((p) => p.status === 'OPEN').length;
-  if (activePositionCount < portfolio.maxConcurrentPositions && cash >= portfolio.allocationPerTradeUsd) {
+  const currentAllocation = calculateTradeAllocation(portfolio);
+  const hoursCheck = isWithinActiveTradingHours(portfolio);
+
+  if (!hoursCheck.allowed) {
+    const lastSleepLogTime = lastSleepProtectionLogMap.get('copyBot');
+    if (!lastSleepLogTime || Date.now() - lastSleepLogTime >= 10 * 60 * 1000) {
+      lastSleepProtectionLogMap.set('copyBot', Date.now());
+      newLogs.unshift({
+        id: `log-sleep-protect-copy-${Date.now()}`,
+        timestamp: Date.now(),
+        type: 'EVALUATION_PASS',
+        tokenSymbol: 'SOL',
+        tokenAddress: 'So11111111111111111111111111111111111111112',
+        chain: 'solana',
+        convictionScore: 50,
+        action: `SLEEP PROTECTION ACTIVE (${hoursCheck.currentUtcTime}): New copy entries paused outside 13:30-22:00 UTC`,
+        rationale: hoursCheck.reason || 'Overnight bid liquidity is thin. Existing positions monitored with dynamic trailing stops, but new entries are paused to avoid sleep selloffs.',
+        improvementLessonTag: '[SLEEP_PROTECTION_GUARD]',
+        improvementNote: 'Capital protected from off-hours liquidity vacuums and overnight dump volatility.',
+      });
+    }
+  }
+
+  if (hoursCheck.allowed && activePositionCount < portfolio.maxConcurrentPositions && cash >= currentAllocation) {
     const targetWallets: Array<{ address: string; label: string; isDynamic?: boolean }> = SEED_WALLETS.slice(0, 8).map((w) => ({
       address: w.address,
       label: w.label,
     }));
 
     // If slots are available and cash permits, dynamically pull active Solana traders from real on-chain swaps
-    if (updatedPositions.length < portfolio.maxConcurrentPositions && cash >= portfolio.allocationPerTradeUsd) {
+    if (updatedPositions.length < portfolio.maxConcurrentPositions && cash >= currentAllocation) {
       try {
         const liveTraderAddresses = await discoverActiveTraders(12);
         for (const addr of liveTraderAddresses) {
@@ -1146,7 +1262,7 @@ export async function runCopyBotTick(
 
     for (const wallet of targetWallets) {
       if (entriesThisTick >= MAX_COPY_ENTRIES_PER_TICK) break;
-      if (updatedPositions.length >= portfolio.maxConcurrentPositions || cash < portfolio.allocationPerTradeUsd) break;
+      if (updatedPositions.length >= portfolio.maxConcurrentPositions || cash < currentAllocation) break;
 
       // Trader Performance Circuit Breaker: Skip wallets in cooldown
       const traderCooldown = isTraderInCooldown(wallet.address);
@@ -1164,7 +1280,7 @@ export async function runCopyBotTick(
         );
 
         for (const freshBuy of candidateBuys) {
-          if (updatedPositions.length >= portfolio.maxConcurrentPositions || cash < portfolio.allocationPerTradeUsd) break;
+          if (updatedPositions.length >= portfolio.maxConcurrentPositions || cash < currentAllocation) break;
 
           const exitKey = `${wallet.address}:${freshBuy.tokenAddress}:${freshBuy.signature}`;
           if (knownExitedBuysSet.has(exitKey) || knownRejectedBuysSet.has(exitKey)) {
@@ -1360,7 +1476,7 @@ export async function runCopyBotTick(
             }
 
             // Execute true copy trade
-            const allocation = portfolio.allocationPerTradeUsd;
+            const allocation = currentAllocation;
             cash = +(cash - allocation).toFixed(2);
             const tokenAmount = +(allocation / spotPrice).toFixed(4);
 
@@ -1478,6 +1594,7 @@ export async function runCopyBotTick(
     peakEquityUsd,
     maxDrawdownUsd,
     maxDrawdownPercent,
+    dynamicAllocationUsd: currentAllocation,
   };
 
   return {
@@ -1991,7 +2108,30 @@ export async function runGemRadarBotTick(
 
   // 2. Scan Live Gem Radar for High-Conviction Breakout Setups
   const activePositionCount = updatedPositions.filter((p) => p.status === 'OPEN').length;
-  if (activePositionCount < portfolio.maxConcurrentPositions && cash >= portfolio.allocationPerTradeUsd) {
+  const currentAllocation = calculateTradeAllocation(portfolio);
+  const hoursCheck = isWithinActiveTradingHours(portfolio);
+
+  if (!hoursCheck.allowed) {
+    const lastSleepLogTime = lastSleepProtectionLogMap.get('gemRadarBot');
+    if (!lastSleepLogTime || Date.now() - lastSleepLogTime >= 10 * 60 * 1000) {
+      lastSleepProtectionLogMap.set('gemRadarBot', Date.now());
+      newLogs.unshift({
+        id: `log-sleep-protect-gem-${Date.now()}`,
+        timestamp: Date.now(),
+        type: 'EVALUATION_PASS',
+        tokenSymbol: 'SOL',
+        tokenAddress: 'So11111111111111111111111111111111111111112',
+        chain: 'solana',
+        convictionScore: 50,
+        action: `SLEEP PROTECTION ACTIVE (${hoursCheck.currentUtcTime}): New gem breakout entries paused outside 13:30-22:00 UTC`,
+        rationale: hoursCheck.reason || 'Overnight bid liquidity is thin. Existing positions monitored with dynamic trailing stops, but new entries are paused to avoid sleep selloffs and thin-pool dev dumps.',
+        improvementLessonTag: '[SLEEP_PROTECTION_GUARD]',
+        improvementNote: 'Capital protected from off-hours liquidity vacuums and overnight dump volatility.',
+      });
+    }
+  }
+
+  if (hoursCheck.allowed && activePositionCount < portfolio.maxConcurrentPositions && cash >= currentAllocation) {
     try {
       const liveSignals = await detectPreBreakoutGemSignals();
       let entriesThisTick = 0;
@@ -1999,7 +2139,7 @@ export async function runGemRadarBotTick(
 
       for (const sig of liveSignals) {
         if (entriesThisTick >= MAX_GEM_ENTRIES_PER_TICK) break;
-        if (updatedPositions.length >= portfolio.maxConcurrentPositions || cash < portfolio.allocationPerTradeUsd) break;
+        if (updatedPositions.length >= portfolio.maxConcurrentPositions || cash < currentAllocation) break;
 
         const alreadyHolding = updatedPositions.some((p) => p.tokenAddress === sig.tokenAddress);
         if (alreadyHolding) continue;
@@ -2016,7 +2156,7 @@ export async function runGemRadarBotTick(
             chain: 'solana',
             convictionScore: 25,
             action: `SKIPPED ${sig.tokenSymbol}: Anti-Churn Cooldown Active (${cooldownCheck.remainingMinutes}m remaining, Strike ${cooldownCheck.strikeCount})`,
-            rationale: `Token triggered stop-loss (Strike ${cooldownCheck.strikeCount}). Blacklisted for ${cooldownCheck.strikeCount >= 2 ? '24 hours (Quarantine)' : '3 hours'} to prevent repetitive churn losses.`,
+            rationale: `Token triggered stop-loss (Strike ${cooldownCheck.strikeCount}). Blacklisted for ${cooldownCheck.strikeCount >= 2 ? '24 hours (Quarantine)' : '6 hours'} to prevent repetitive churn losses.`,
             improvementLessonTag: '[MULTI_STRIKE_COOLDOWN]',
             improvementNote: 'Capital protected from repetitive churn losses.',
           });
@@ -2035,7 +2175,7 @@ export async function runGemRadarBotTick(
             chain: 'solana',
             convictionScore: 30,
             action: `SKIPPED ${sig.tokenSymbol}: Anti-FOMO Cooldown Active (${tpCooldownCheck.remainingMinutes}m remaining)`,
-            rationale: `Token recently hit Take-Profit / Trailing Stop. Blacklisted for 60 minutes to prevent buying the exhausted top of a finished pump.`,
+            rationale: `Token recently hit Take-Profit / Trailing Stop. Blacklisted for 6 hours to prevent buying the exhausted top of a finished pump cycle.`,
             improvementLessonTag: '[ANTI_TOP_FOMO_COOLDOWN]',
             improvementNote: 'Capital protected from post-pump exhaustion and secondary dump tops.',
           });
@@ -2044,7 +2184,7 @@ export async function runGemRadarBotTick(
 
         // Entry criteria: Confidence >= 80, liquidity depth >= $35k (Strict Floor), valid spot price
         if (sig.confidenceScore >= 80 && sig.liquidityUsd >= 35000 && sig.priceUsd > 0) {
-          const allocation = portfolio.allocationPerTradeUsd;
+          const allocation = currentAllocation;
           cash = +(cash - allocation).toFixed(2);
           const spotPrice = sig.priceUsd;
           const tokenAmount = +(allocation / spotPrice).toFixed(4);
@@ -2156,6 +2296,7 @@ export async function runGemRadarBotTick(
     peakEquityUsd,
     maxDrawdownUsd,
     maxDrawdownPercent,
+    dynamicAllocationUsd: currentAllocation,
   };
 
   return {

@@ -27,8 +27,9 @@ export async function detectPreBreakoutGemSignals(): Promise<PreBreakoutGemSigna
     // Strict Entry Guard 1b: Reject immature pools under 3 minutes old with low activity (< 50 transactions)
     if (token.ageMinutes < 3 && ((token.buyers24h || 0) + (token.sellers24h || 0)) < 50) continue;
 
-    // Strict Entry Guard 1c: Turnover Climax Guard - Reject ANY pool where 5m volume > 1.8x total liquidity (climax blow-off top / sniper exit dump)
-    if (liquidity > 0 && volume5m > liquidity * 1.8) continue;
+    // Strict Entry Guard 1c: Turnover Climax Guard - Reject ANY pool where 5m volume > 0.85x total liquidity
+    // Hardened in V3.2 from 1.8x to 0.85x to block climax blow-off tops and dev pool-drain dumps (e.g. SUKI)
+    if (liquidity > 0 && volume5m > liquidity * 0.85) continue;
 
     // Strict Entry Guard 1d: Anti-Falling-Knife Guard - Reject tokens in steep 24h downtrend (down > 15%)
     if (token.priceChange24h !== undefined && token.priceChange24h < -15) continue;

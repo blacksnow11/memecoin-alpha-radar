@@ -43,6 +43,9 @@ import {
   calculateTimeframePnlMetrics,
   calculateProfitLadderAnalytics,
   filterTradesByTimeframe,
+  computeHourlyPerformanceStats,
+  isWithinActiveTradingHours,
+  calculateTradeAllocation,
 } from '@/lib/demo-trading-engine';
 
 interface DemoTradingStudioProps {
@@ -118,8 +121,8 @@ export function DemoTradingStudio({
   // Timeframe selector for top-level metrics
   const [metricTimeframe, setMetricTimeframe] = useState<'all' | '24h' | '7d' | '30d'>('all');
 
-  // Studio tabs: 'positions' or 'history'
-  const [activeStudioTab, setActiveStudioTab] = useState<'positions' | 'history'>('positions');
+  // Studio tabs: 'positions', 'history', or 'hourly'
+  const [activeStudioTab, setActiveStudioTab] = useState<'positions' | 'history' | 'hourly'>('positions');
 
   // Closed trades ledger view mode: 'individual' trades vs 'periodic' (Day/Week/Month)
   const [historyViewMode, setHistoryViewMode] = useState<'individual' | 'periodic'>('individual');
@@ -143,6 +146,11 @@ export function DemoTradingStudio({
 
   const openPositions = positions.filter((p) => p.status === 'OPEN');
   const closedTrades = portfolio.closedTrades || [];
+
+  // V3.2 Hourly Performance Analytics & Active Hours Check
+  const hourlyStats = useMemo(() => computeHourlyPerformanceStats(closedTrades), [closedTrades]);
+  const activeHoursCheck = useMemo(() => isWithinActiveTradingHours(portfolio), [portfolio]);
+  const currentTradeAllocation = useMemo(() => calculateTradeAllocation(portfolio), [portfolio]);
 
   // MFE Profitability Ladder Analytics
   const activeProfitLadder = useMemo(() => {
@@ -860,6 +868,44 @@ export function DemoTradingStudio({
             </span>
           </div>
         </div>
+
+        {/* V3.2 Institutional Risk Budgeting & Sleep Protection Status */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 bg-slate-900/90 p-3 rounded-xl border border-indigo-500/30 text-xs">
+          {/* Active Hours / Sleep Protection Guard */}
+          <div className="flex items-center justify-between p-2.5 bg-slate-950/70 rounded-lg border border-slate-800">
+            <div className="flex items-center space-x-2.5">
+              <div className={`w-2.5 h-2.5 rounded-full ${activeHoursCheck.allowed ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
+              <div>
+                <div className="text-[10px] text-slate-400 uppercase font-semibold">Active Market Window</div>
+                <div className="font-bold text-white text-xs mt-0.5 flex items-center space-x-1.5">
+                  <span>{activeHoursCheck.allowed ? '🟢 Live US Market Session' : '🌙 Sleep Protection Active'}</span>
+                  <span className="text-[10px] font-mono text-slate-400 font-normal">({activeHoursCheck.currentUtcTime})</span>
+                </div>
+              </div>
+            </div>
+            <div className="text-right">
+              <span className={`text-[10px] px-2 py-0.5 rounded font-mono font-medium ${activeHoursCheck.allowed ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'}`}>
+                {activeHoursCheck.allowed ? '13:30 - 22:00 UTC' : 'New Entries Paused'}
+              </span>
+            </div>
+          </div>
+
+          {/* Institutional Risk Budgeting Sizing Formula */}
+          <div className="flex items-center justify-between p-2.5 bg-slate-950/70 rounded-lg border border-slate-800">
+            <div>
+              <div className="text-[10px] text-slate-400 uppercase font-semibold">Risk Budgeting Formula (12 Slots)</div>
+              <div className="font-bold text-white text-xs mt-0.5 flex items-center space-x-1.5">
+                <span className="text-cyber-accent font-mono">${currentTradeAllocation.toFixed(2)}/trade</span>
+                <span className="text-[10px] text-slate-400 font-mono font-normal">(${portfolio.totalEquityUsd.toFixed(0)} ÷ 12)</span>
+              </div>
+            </div>
+            <div className="text-right">
+              <span className="text-[10px] px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 font-mono">
+                5 Concur + 4 DD + 2 Safety
+              </span>
+            </div>
+          </div>
+        </div>
       </div>
 
       {/* Mathematical Equity Reconciliation Box (Proof of Zero Double-Counting / Zero Inflation) */}
@@ -980,12 +1026,33 @@ export function DemoTradingStudio({
               {closedTrades.length}
             </span>
           </button>
+
+          <button
+            onClick={() => setActiveStudioTab('hourly')}
+            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center space-x-2 ${
+              activeStudioTab === 'hourly'
+                ? 'bg-amber-400 text-slate-950 shadow-lg shadow-amber-400/20'
+                : 'bg-slate-900 text-slate-400 hover:text-slate-200 border border-cyber-border'
+            }`}
+          >
+            <Clock className="w-4 h-4" />
+            <span>Hourly Analytics</span>
+            <span
+              className={`px-1.5 py-0.2 rounded-full text-[10px] font-mono ${
+                activeStudioTab === 'hourly' ? 'bg-slate-950/40 text-slate-950' : 'bg-slate-800 text-slate-300'
+              }`}
+            >
+              24h Window
+            </span>
+          </button>
         </div>
 
         <div className="hidden sm:block text-xs text-slate-400 font-mono">
           {activeStudioTab === 'positions'
             ? `Max ${portfolio.maxConcurrentPositions} positions allowed concurrently`
-            : `${closedWins} Wins / ${closedLosses} Losses recorded`}
+            : activeStudioTab === 'history'
+            ? `${closedWins} Wins / ${closedLosses} Losses recorded`
+            : '24-Hour Market Session Win Rate & P&L Matrix'}
         </div>
       </div>
 
@@ -1843,6 +1910,129 @@ export function DemoTradingStudio({
         </div>
       )}
 
+      {/* SECTION 3: Live Hourly Performance Analytics */}
+      {activeStudioTab === 'hourly' && (
+        <div className="bg-cyber-card rounded-xl border border-cyber-border p-5 space-y-5">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-cyber-border">
+            <div>
+              <h3 className="text-sm font-bold text-white flex items-center space-x-2">
+                <Clock className="w-4 h-4 text-amber-400" />
+                <span>24-Hour Market Session Performance Analytics</span>
+              </h3>
+              <p className="text-xs text-slate-400 mt-1">
+                Empirical win-rate and P&L breakdown across every hour of the day (UTC). Validates the US high-liquidity active window against overnight sleep selloffs.
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 text-xs font-mono">
+              <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[11px]">
+                🟢 Active Session (14:00 - 21:59 UTC)
+              </span>
+              <span className="px-2 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700 text-[11px]">
+                🌙 Sleep / Low-Liquidity Window
+              </span>
+            </div>
+          </div>
+
+          {/* Hourly Performance Table */}
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs font-mono">
+              <thead>
+                <tr className="border-b border-cyber-border/80 text-slate-400 text-[11px]">
+                  <th className="py-2.5 px-3">Hour (UTC)</th>
+                  <th className="py-2.5 px-3">Market Session Status</th>
+                  <th className="py-2.5 px-3 text-center">Trades</th>
+                  <th className="py-2.5 px-3 text-center">Wins / Losses</th>
+                  <th className="py-2.5 px-3 text-right">Win Rate</th>
+                  <th className="py-2.5 px-3 text-right">Net P&L</th>
+                  <th className="py-2.5 px-3 text-right">Avg Win</th>
+                  <th className="py-2.5 px-3 text-right">Avg Loss</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-cyber-border/40">
+                {hourlyStats.map((st) => {
+                  const hasTrades = st.totalTrades > 0;
+                  const isPositive = st.netPnlUsd > 0;
+                  const isCurrentHour = new Date().getUTCHours() === st.hourUtc;
+
+                  return (
+                    <tr
+                      key={st.hourUtc}
+                      className={`hover:bg-slate-800/40 transition-colors ${
+                        isCurrentHour ? 'bg-amber-500/10 border-l-2 border-amber-400' : ''
+                      } ${st.isPeakSession ? 'bg-emerald-950/10' : ''}`}
+                    >
+                      <td className="py-2 px-3 font-bold text-white flex items-center space-x-2">
+                        <span>{String(st.hourUtc).padStart(2, '0')}:00 UTC</span>
+                        {isCurrentHour && (
+                          <span className="px-1.5 py-0.2 text-[9px] font-bold rounded bg-amber-400 text-slate-950">
+                            NOW
+                          </span>
+                        )}
+                      </td>
+                      <td className="py-2 px-3">
+                        {st.isPeakSession ? (
+                          <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                            🟢 High Liquidity (US Active)
+                          </span>
+                        ) : st.hourUtc >= 22 || st.hourUtc <= 9 ? (
+                          <span className="text-[10px] px-2 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700">
+                            🌙 Sleep / Low-Liquidity Window
+                          </span>
+                        ) : (
+                          <span className="text-[10px] px-2 py-0.5 rounded bg-blue-500/20 text-blue-300 border border-blue-500/30">
+                            🌅 Europe Pre-Market
+                          </span>
+                        )}
+                      </td>
+                      <td className="py-2 px-3 text-center font-bold text-slate-200">
+                        {st.totalTrades}
+                      </td>
+                      <td className="py-2 px-3 text-center">
+                        <span className="text-emerald-400 font-bold">{st.wins}W</span>
+                        <span className="text-slate-500 mx-1">/</span>
+                        <span className="text-rose-400 font-bold">{st.losses}L</span>
+                      </td>
+                      <td className="py-2 px-3 text-right">
+                        {hasTrades ? (
+                          <span
+                            className={`font-bold ${
+                              st.winRatePercent >= 50
+                                ? 'text-emerald-400'
+                                : st.winRatePercent >= 35
+                                ? 'text-amber-400'
+                                : 'text-rose-400'
+                            }`}
+                          >
+                            {st.winRatePercent}%
+                          </span>
+                        ) : (
+                          <span className="text-slate-600">-</span>
+                        )}
+                      </td>
+                      <td className="py-2 px-3 text-right font-bold">
+                        {hasTrades ? (
+                          <span className={isPositive ? 'text-emerald-400' : st.netPnlUsd < 0 ? 'text-rose-400' : 'text-slate-400'}>
+                            {isPositive ? '+' : ''}${st.netPnlUsd.toFixed(2)}
+                          </span>
+                        ) : (
+                          <span className="text-slate-600">$0.00</span>
+                        )}
+                      </td>
+                      <td className="py-2 px-3 text-right text-emerald-400">
+                        {st.wins > 0 ? `+$${st.avgWinUsd.toFixed(2)}` : '-'}
+                      </td>
+                      <td className="py-2 px-3 text-right text-rose-400">
+                        {st.losses > 0 ? `-$${Math.abs(st.avgLossUsd).toFixed(2)}` : '-'}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
       {/* Autonomous Strategy Tuning & Parameters */}
       <div className="bg-cyber-card rounded-xl border border-cyber-border p-5 space-y-4">
         <div className="flex items-center justify-between">
@@ -1885,13 +2075,13 @@ export function DemoTradingStudio({
               onChange={(e) => setAllocation(Number(e.target.value))}
               className="w-full bg-slate-900 border border-cyber-border rounded px-2 py-1 text-xs text-slate-200 focus:outline-none"
             >
-              <option value="10">$10 per trade (10 positions per $100)</option>
-              <option value="15">$15 per trade (6 positions per $100)</option>
-              <option value="20">$20 per trade (5 positions per $100)</option>
-              <option value="25">$25 per trade (4 positions per $100)</option>
+              <option value="83">$83 per trade (12-Slot Risk Divisor on $1,000)</option>
+              <option value="20">$20 per trade (Conservative Demo Base)</option>
+              <option value="15">$15 per trade (Micro Sizing)</option>
+              <option value="10">$10 per trade (Ultra-Conservative)</option>
             </select>
             <p className="text-[10px] text-slate-500">
-              Fractional bankroll allocation prevents single-trade wipeouts.
+              Institutional 12-Slot Divisor (5 Concurrency + 4 DD Cushion + 2 Safety Margin).
             </p>
           </div>
 
