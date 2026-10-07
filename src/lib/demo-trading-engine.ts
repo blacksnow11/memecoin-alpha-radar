@@ -172,6 +172,7 @@ export function createDefaultTournamentAccounts(): Record<string, BotAccountProf
 
 // Active Trading Hours & Night Sleep Protection Guard
 export const lastSleepProtectionLogMap = new Map<string, number>();
+export const lastNightShieldLogMap = new Map<string, number>();
 
 export function isAccountInSleepWindow(
   profile?: {
@@ -2435,6 +2436,29 @@ export async function runGemRadarBotTick(
           });
 
           entriesThisTick++;
+        } else if (isNight && sig.confidenceScore >= (portfolio.minConvictionThreshold || 80) && sig.liquidityUsd >= 35000) {
+          // Token would qualify under standard daytime rules, but was filtered by Night Shield
+          const nightLogKey = `${profile?.id || 'gem'}-${sig.tokenAddress}`;
+          const lastLog = lastNightShieldLogMap.get(nightLogKey);
+          if (!lastLog || Date.now() - lastLog > 15 * 60 * 1000) {
+            lastNightShieldLogMap.set(nightLogKey, Date.now());
+            const failedReason = sig.confidenceScore < minConviction
+              ? `Conviction score ${sig.confidenceScore} < ${minConviction} night floor`
+              : `Liquidity $${Math.round(sig.liquidityUsd).toLocaleString()} < $${Math.round(minLiquidity).toLocaleString()} night floor`;
+            newLogs.unshift({
+              id: `log-night-shield-skip-${Date.now()}-${sig.tokenSymbol}`,
+              timestamp: Date.now(),
+              type: 'EVALUATION_REJECT',
+              tokenSymbol: sig.tokenSymbol,
+              tokenAddress: sig.tokenAddress,
+              chain: 'solana',
+              convictionScore: sig.confidenceScore,
+              action: `🛡️ NIGHT SHIELD FILTER: ${sig.tokenSymbol} skipped (${failedReason})`,
+              rationale: `Token meets standard daytime thresholds (Score ${sig.confidenceScore}, Liq $${Math.round(sig.liquidityUsd).toLocaleString()}), but Account 4 Night Shield enforces stricter limits between 00:00-06:00 UTC (Score ≥90, Liq ≥$75k).`,
+              improvementLessonTag: '[NIGHT_SHIELD_DEFENSE]',
+              improvementNote: 'Defended capital against overnight liquidity thinness and off-hours volatility.',
+            });
+          }
         }
       }
     } catch (err) {
