@@ -316,6 +316,33 @@ export interface DualBotState {
     positions: DemoPosition[];
     logs: DecisionLog[];
   };
+  tournamentAccounts?: Record<string, BotAccountProfile>;
+}
+
+export type TournamentAccountId = 'gem_radar_12to6' | 'gem_radar_2to6' | 'gem_radar_4to6' | 'gem_radar_247';
+
+export interface NightShieldConfig {
+  minConviction: number;
+  minLiquidityUsd: number;
+  maxAllocationUsd: number;
+  nightStartUtc: number;
+  nightEndUtc: number;
+}
+
+export interface BotAccountProfile {
+  id: TournamentAccountId;
+  name: string;
+  badgeLabel: string;
+  description: string;
+  sleepHoursStartUtc: number; // e.g. 0 for 12am, 2 for 2am, 4 for 4am, -1 for none
+  sleepHoursEndUtc: number;   // e.g. 6 for 6am, -1 for none
+  sleepDurationHours: number; // 6, 4, 2, or 0
+  activeHoursPerDay: number;  // 18, 20, 22, or 24
+  is247Adaptive?: boolean;
+  nightShield?: NightShieldConfig;
+  portfolio: DemoPortfolio;
+  positions: DemoPosition[];
+  logs: DecisionLog[];
 }
 
 export interface SmartWalletDetectorEvidence {

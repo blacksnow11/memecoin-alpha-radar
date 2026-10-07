@@ -1,4 +1,5 @@
 import {
+  BotAccountProfile,
   ChainId,
   DecisionLog,
   DemoClosedTrade,
@@ -10,6 +11,7 @@ import {
   PreBreakoutGemSignal,
   ProfitLadderAnalytics,
   Token,
+  TournamentAccountId,
   Trade,
   WalletProfile,
 } from './types';
@@ -73,44 +75,221 @@ export function isTokenInTakeProfitCooldown(tokenAddress: string): { inCooldown:
   return { inCooldown: true, remainingMinutes: Math.ceil(diff / 60000) };
 }
 
-// Active Trading Hours / Sleep Protection Guard
-// Restricts opening NEW positions outside high-liquidity market hours (13:30 to 22:00 UTC)
-// Open positions are continuously managed with full trailing stops and circuit breakers.
+// =========================================================================
+// Alpha Schedule Tournament Configurations (12am-6am, 2am-6am, 4am-6am, 24/7)
+// Daytime UTC (06:00 to 24:00 UTC) is 100% active on all accounts!
+// Sleep hours are strictly night-time only to scientifically isolate optimal windows.
+// =========================================================================
+export const TOURNAMENT_ACCOUNT_CONFIGS: Array<{
+  id: TournamentAccountId;
+  name: string;
+  badgeLabel: string;
+  description: string;
+  sleepHoursStartUtc: number;
+  sleepHoursEndUtc: number;
+  sleepDurationHours: number;
+  activeHoursPerDay: number;
+  is247Adaptive?: boolean;
+  nightShield?: {
+    minConviction: number;
+    minLiquidityUsd: number;
+    maxAllocationUsd: number;
+    nightStartUtc: number;
+    nightEndUtc: number;
+  };
+}> = [
+  {
+    id: 'gem_radar_12to6',
+    name: 'Account 1: 12am–6am Sleep',
+    badgeLabel: '18h Active (6h Sleep: 00:00–06:00 UTC)',
+    description: 'Sleeps 00:00–06:00 UTC. Captures all daytime & evening moves (18 hours/day active).',
+    sleepHoursStartUtc: 0,
+    sleepHoursEndUtc: 6,
+    sleepDurationHours: 6,
+    activeHoursPerDay: 18,
+    is247Adaptive: false,
+  },
+  {
+    id: 'gem_radar_2to6',
+    name: 'Account 2: 2am–6am Sleep',
+    badgeLabel: '20h Active (4h Sleep: 02:00–06:00 UTC)',
+    description: 'Sleeps 02:00–06:00 UTC. Captures late night US continuation (20 hours/day active).',
+    sleepHoursStartUtc: 2,
+    sleepHoursEndUtc: 6,
+    sleepDurationHours: 4,
+    activeHoursPerDay: 20,
+    is247Adaptive: false,
+  },
+  {
+    id: 'gem_radar_4to6',
+    name: 'Account 3: 4am–6am Sleep',
+    badgeLabel: '22h Active (2h Sleep: 04:00–06:00 UTC)',
+    description: 'Sleeps 04:00–06:00 UTC. Sleeps only the brief pre-dawn lull (22 hours/day active).',
+    sleepHoursStartUtc: 4,
+    sleepHoursEndUtc: 6,
+    sleepDurationHours: 2,
+    activeHoursPerDay: 22,
+    is247Adaptive: false,
+  },
+  {
+    id: 'gem_radar_247',
+    name: 'Account 4: 24/7 Non-Stop',
+    badgeLabel: '24h Active (Adaptive Night Mode)',
+    description: 'Runs 24/7 non-stop. During 00:00–06:00 UTC, enforces strict Night Shield (Conviction ≥90, Liq ≥$75k, Size $40).',
+    sleepHoursStartUtc: -1,
+    sleepHoursEndUtc: -1,
+    sleepDurationHours: 0,
+    activeHoursPerDay: 24,
+    is247Adaptive: true,
+    nightShield: {
+      minConviction: 90,
+      minLiquidityUsd: 75000,
+      maxAllocationUsd: 40,
+      nightStartUtc: 0,
+      nightEndUtc: 6,
+    },
+  },
+];
+
+export function createDefaultTournamentAccounts(): Record<string, BotAccountProfile> {
+  const accounts: Record<string, BotAccountProfile> = {};
+  for (const cfg of TOURNAMENT_ACCOUNT_CONFIGS) {
+    accounts[cfg.id] = {
+      ...cfg,
+      portfolio: {
+        ...DEFAULT_GEM_RADAR_PORTFOLIO,
+        activeHoursStartUtc: cfg.sleepHoursEndUtc === -1 ? 0 : cfg.sleepHoursEndUtc,
+        activeHoursEndUtc: cfg.sleepHoursStartUtc === -1 ? 24 : cfg.sleepHoursStartUtc,
+        equityHistory: [{ timestamp: Date.now(), equityUsd: 1000.00 }],
+        closedTrades: [],
+      },
+      positions: [],
+      logs: [...INITIAL_GEM_RADAR_LOGS],
+    };
+  }
+  return accounts;
+}
+
+// Active Trading Hours & Night Sleep Protection Guard
 export const lastSleepProtectionLogMap = new Map<string, number>();
 
-export function isWithinActiveTradingHours(portfolio: DemoPortfolio): { allowed: boolean; currentUtcTime: string; reason?: string } {
+export function isAccountInSleepWindow(
+  profile?: {
+    sleepHoursStartUtc?: number;
+    sleepHoursEndUtc?: number;
+    is247Adaptive?: boolean;
+    nightShield?: {
+      minConviction: number;
+      minLiquidityUsd: number;
+      maxAllocationUsd: number;
+      nightStartUtc: number;
+      nightEndUtc: number;
+    };
+  },
+  date: Date = new Date()
+): {
+  isSleeping: boolean;
+  currentUtcTime: string;
+  isNightShieldActive: boolean;
+  reason?: string;
+} {
+  const utcHours = date.getUTCHours();
+  const utcMinutes = date.getUTCMinutes();
+  const utcDecimal = utcHours + utcMinutes / 60;
+  const currentUtcTime = `${String(utcHours).padStart(2, '0')}:${String(utcMinutes).padStart(2, '0')} UTC`;
+
+  // Default fallback if no profile provided (legacy default: 00:00 to 06:00 UTC night sleep)
+  if (!profile || (profile.sleepHoursStartUtc === undefined && !profile.is247Adaptive)) {
+    const isSleeping = utcDecimal >= 0 && utcDecimal < 6;
+    return {
+      isSleeping,
+      currentUtcTime,
+      isNightShieldActive: false,
+      reason: isSleeping
+        ? `Night Sleep Active (${currentUtcTime} is inside 00:00-06:00 UTC night window). New entries paused; existing positions monitored.`
+        : undefined,
+    };
+  }
+
+  // 24/7 Non-Stop: never sleeps, but applies Night Shield between 00:00 and 06:00 UTC
+  if (profile.is247Adaptive || profile.sleepHoursStartUtc === -1) {
+    const isNightShieldActive = utcDecimal >= 0 && utcDecimal < 6;
+    return {
+      isSleeping: false,
+      currentUtcTime,
+      isNightShieldActive,
+    };
+  }
+
+  const start = profile.sleepHoursStartUtc!;
+  const end = profile.sleepHoursEndUtc!;
+
+  let inSleepWindow = false;
+  if (start < end) {
+    inSleepWindow = utcDecimal >= start && utcDecimal < end;
+  } else {
+    inSleepWindow = utcDecimal >= start || utcDecimal < end;
+  }
+
+  if (inSleepWindow) {
+    const startStr = `${String(Math.floor(start)).padStart(2, '0')}:00`;
+    const endStr = `${String(Math.floor(end)).padStart(2, '0')}:00`;
+    return {
+      isSleeping: true,
+      currentUtcTime,
+      isNightShieldActive: false,
+      reason: `Night Sleep Active (${currentUtcTime} is inside scheduled night window ${startStr}-${endStr} UTC). New entries paused; existing positions monitored.`,
+    };
+  }
+
+  return {
+    isSleeping: false,
+    currentUtcTime,
+    isNightShieldActive: false,
+  };
+}
+
+export function isWithinActiveTradingHours(portfolio: DemoPortfolio): { allowed: boolean; currentUtcTime: string; reason?: string; isNightShield?: boolean } {
   const now = new Date();
   const utcDecimal = now.getUTCHours() + now.getUTCMinutes() / 60;
   const currentUtcTime = `${String(now.getUTCHours()).padStart(2, '0')}:${String(now.getUTCMinutes()).padStart(2, '0')} UTC`;
 
   if (portfolio.tradingHoursMode === 'ALL_HOURS') {
-    return { allowed: true, currentUtcTime };
+    return { allowed: true, currentUtcTime, isNightShield: false };
   }
 
-  const start = portfolio.activeHoursStartUtc ?? 13.5; // 13:30 UTC
-  const end = portfolio.activeHoursEndUtc ?? 22.0;     // 22:00 UTC
-
-  if (utcDecimal >= start && utcDecimal <= end) {
-    return { allowed: true, currentUtcTime };
+  // Daytime UTC (06:00-24:00 UTC) is 100% active. Sleep is strictly night-time (00:00-06:00 UTC)
+  const isSleeping = utcDecimal >= 0 && utcDecimal < 6;
+  if (!isSleeping) {
+    return { allowed: true, currentUtcTime, isNightShield: false };
   }
 
   return {
     allowed: false,
     currentUtcTime,
-    reason: `Sleep Protection Active (${currentUtcTime} is outside active market window 13:30-22:00 UTC). Overnight bid liquidity is thin; new entries paused to prevent predatory dev dumps and gap slippage.`,
+    reason: `Night Sleep Active (${currentUtcTime} is inside 00:00-06:00 UTC night window). All daytime hours (06:00-24:00 UTC) are 100% active.`,
+    isNightShield: false,
   };
 }
 
-// Dynamic Risk-Partitioned Sizing Formula (The 12-Slot Divisor)
+// Dynamic Risk-Partitioned Sizing Formula (The 12-Slot Divisor) + Tiered Liquidity Cap (Rug Shield)
 // Sizing = Account Balance / 12 (5 max concurrency + 4 drawdown buffer + 2 safety cushion)
-export function calculateTradeAllocation(portfolio: DemoPortfolio): number {
+// Microcaps (< $50,000 pool liquidity) capped at $40 max to prevent catastrophic dev drain outliers.
+export function calculateTradeAllocation(portfolio: DemoPortfolio, tokenLiquidityUsd?: number): number {
+  let allocation = portfolio.allocationPerTradeUsd;
   if (portfolio.sizingMode === 'DYNAMIC_RISK_BUDGET') {
     const divisor = Math.max(1, portfolio.riskDivisor || 12);
     const baseEquity = portfolio.totalEquityUsd > 0 ? portfolio.totalEquityUsd : portfolio.startingCash;
-    const computed = Math.round(baseEquity / divisor);
-    return Math.max(1, Math.min(computed, portfolio.currentCash));
+    allocation = Math.round(baseEquity / divisor);
   }
-  return Math.max(1, Math.min(portfolio.allocationPerTradeUsd, portfolio.currentCash));
+
+  // Tiered Liquidity Cap (Rug Shield):
+  // If token pool liquidity is under $50,000, cap allocation at $40 to limit exposure to instant dev drains
+  if (typeof tokenLiquidityUsd === 'number' && tokenLiquidityUsd > 0 && tokenLiquidityUsd < 50000) {
+    allocation = Math.min(allocation, 40);
+  }
+
+  return Math.max(1, Math.min(allocation, portfolio.currentCash));
 }
 
 // Computes live hourly performance analytics across all 24 UTC hours
@@ -1614,7 +1793,8 @@ export async function runGemRadarBotTick(
   portfolio: DemoPortfolio,
   positions: DemoPosition[],
   logs: DecisionLog[],
-  closedTradesInput?: DemoClosedTrade[]
+  closedTradesInput?: DemoClosedTrade[],
+  profile?: BotAccountProfile
 ): Promise<{
   updatedPortfolio: DemoPortfolio;
   updatedPositions: DemoPosition[];
@@ -2109,12 +2289,15 @@ export async function runGemRadarBotTick(
   // 2. Scan Live Gem Radar for High-Conviction Breakout Setups
   const activePositionCount = updatedPositions.filter((p) => p.status === 'OPEN').length;
   const currentAllocation = calculateTradeAllocation(portfolio);
-  const hoursCheck = isWithinActiveTradingHours(portfolio);
+  const hoursCheck = isAccountInSleepWindow(profile, new Date());
+  const isNight = hoursCheck.isNightShieldActive;
+  const isSleeping = hoursCheck.isSleeping;
 
-  if (!hoursCheck.allowed) {
-    const lastSleepLogTime = lastSleepProtectionLogMap.get('gemRadarBot');
+  if (isSleeping) {
+    const logKey = profile ? `sleep-${profile.id}` : 'gemRadarBot';
+    const lastSleepLogTime = lastSleepProtectionLogMap.get(logKey);
     if (!lastSleepLogTime || Date.now() - lastSleepLogTime >= 10 * 60 * 1000) {
-      lastSleepProtectionLogMap.set('gemRadarBot', Date.now());
+      lastSleepProtectionLogMap.set(logKey, Date.now());
       newLogs.unshift({
         id: `log-sleep-protect-gem-${Date.now()}`,
         timestamp: Date.now(),
@@ -2123,15 +2306,15 @@ export async function runGemRadarBotTick(
         tokenAddress: 'So11111111111111111111111111111111111111112',
         chain: 'solana',
         convictionScore: 50,
-        action: `SLEEP PROTECTION ACTIVE (${hoursCheck.currentUtcTime}): New gem breakout entries paused outside 13:30-22:00 UTC`,
-        rationale: hoursCheck.reason || 'Overnight bid liquidity is thin. Existing positions monitored with dynamic trailing stops, but new entries are paused to avoid sleep selloffs and thin-pool dev dumps.',
-        improvementLessonTag: '[SLEEP_PROTECTION_GUARD]',
-        improvementNote: 'Capital protected from off-hours liquidity vacuums and overnight dump volatility.',
+        action: `NIGHT SLEEP ACTIVE (${hoursCheck.currentUtcTime}): ${profile?.name || 'Gem Radar'} entries paused`,
+        rationale: hoursCheck.reason || 'Night-time bid liquidity is thin. Open positions continuously monitored with trailing stops, but new entries paused.',
+        improvementLessonTag: '[NIGHT_SLEEP_PROTECTION]',
+        improvementNote: 'Capital protected during scheduled night sleep window. Daytime (06:00-24:00 UTC) is active.',
       });
     }
   }
 
-  if (hoursCheck.allowed && activePositionCount < portfolio.maxConcurrentPositions && cash >= currentAllocation) {
+  if (!isSleeping && activePositionCount < portfolio.maxConcurrentPositions && cash >= 10) {
     try {
       const liveSignals = await detectPreBreakoutGemSignals();
       let entriesThisTick = 0;
@@ -2139,7 +2322,7 @@ export async function runGemRadarBotTick(
 
       for (const sig of liveSignals) {
         if (entriesThisTick >= MAX_GEM_ENTRIES_PER_TICK) break;
-        if (updatedPositions.length >= portfolio.maxConcurrentPositions || cash < currentAllocation) break;
+        if (updatedPositions.length >= portfolio.maxConcurrentPositions) break;
 
         const alreadyHolding = updatedPositions.some((p) => p.tokenAddress === sig.tokenAddress);
         if (alreadyHolding) continue;
@@ -2182,9 +2365,20 @@ export async function runGemRadarBotTick(
           continue;
         }
 
-        // Entry criteria: Confidence >= 80, liquidity depth >= $35k (Strict Floor), valid spot price
-        if (sig.confidenceScore >= 80 && sig.liquidityUsd >= 35000 && sig.priceUsd > 0) {
-          const allocation = currentAllocation;
+        // Adaptive entry criteria:
+        // Standard: Confidence >= 80, Liquidity >= $35,000
+        // Night Shield (24/7 account during 00:00-06:00 UTC): Confidence >= 90, Liquidity >= $75,000
+        const minConviction = isNight ? (profile?.nightShield?.minConviction || 90) : (portfolio.minConvictionThreshold || 80);
+        const minLiquidity = isNight ? (profile?.nightShield?.minLiquidityUsd || 75000) : 35000;
+
+        if (sig.confidenceScore >= minConviction && sig.liquidityUsd >= minLiquidity && sig.priceUsd > 0) {
+          // Dynamic Sizing with Tiered Liquidity Cap (Rug Shield)
+          let allocation = calculateTradeAllocation(portfolio, sig.liquidityUsd);
+          if (isNight && profile?.nightShield?.maxAllocationUsd) {
+            allocation = Math.min(allocation, profile.nightShield.maxAllocationUsd);
+          }
+          if (cash < allocation) continue;
+
           cash = +(cash - allocation).toFixed(2);
           const spotPrice = sig.priceUsd;
           const tokenAmount = +(allocation / spotPrice).toFixed(4);

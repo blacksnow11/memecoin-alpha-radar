@@ -1,6 +1,6 @@
 import { getBotState, saveBotStateToDisk, StoredBotState } from './bot-storage';
-import { runCopyBotTick, runGemRadarBotTick } from './demo-trading-engine';
-import { ServerWorkerStatus } from './types';
+import { createDefaultTournamentAccounts, runCopyBotTick, runGemRadarBotTick } from './demo-trading-engine';
+import { BotAccountProfile, ServerWorkerStatus } from './types';
 
 const TICK_INTERVAL_MS = 20000; // 20 seconds
 let isWorkerRunning = false;
@@ -18,19 +18,26 @@ export async function executeBotTick(): Promise<StoredBotState> {
   isTickRunning = true;
   try {
     const currentState = getBotState();
+    const currentTourney = currentState.tournamentAccounts || createDefaultTournamentAccounts();
+    const tourneyAccountIds = Object.keys(currentTourney);
 
-    // Concurrently evaluate Whale Copy Bot & Gem Radar Breakout Bot
-    const [copyRes, gemRes] = await Promise.all([
+    // Concurrently evaluate Whale Copy Bot & All 4 Gem Radar Tournament Accounts
+    const [copyRes, ...tourneyEvaluations] = await Promise.all([
       runCopyBotTick(
         currentState.copyBot.portfolio,
         currentState.copyBot.positions,
         currentState.copyBot.logs
       ),
-      runGemRadarBotTick(
-        currentState.gemRadarBot.portfolio,
-        currentState.gemRadarBot.positions,
-        currentState.gemRadarBot.logs
-      ),
+      ...tourneyAccountIds.map((accId) => {
+        const acc = currentTourney[accId];
+        return runGemRadarBotTick(
+          acc.portfolio,
+          acc.positions,
+          acc.logs,
+          undefined,
+          acc
+        );
+      }),
     ]);
 
     const newCopyLogs =
@@ -38,10 +45,24 @@ export async function executeBotTick(): Promise<StoredBotState> {
         ? [...copyRes.newLogs, ...currentState.copyBot.logs].slice(0, 100)
         : currentState.copyBot.logs;
 
-    const newGemLogs =
-      gemRes.newLogs.length > 0
-        ? [...gemRes.newLogs, ...currentState.gemRadarBot.logs].slice(0, 100)
-        : currentState.gemRadarBot.logs;
+    const updatedTournamentAccounts: Record<string, BotAccountProfile> = {};
+    tourneyAccountIds.forEach((accId, i) => {
+      const orig = currentTourney[accId];
+      const res = tourneyEvaluations[i];
+      const mergedLogs =
+        res.newLogs.length > 0
+          ? [...res.newLogs, ...orig.logs].slice(0, 100)
+          : orig.logs;
+
+      updatedTournamentAccounts[accId] = {
+        ...orig,
+        portfolio: res.updatedPortfolio,
+        positions: res.updatedPositions,
+        logs: mergedLogs,
+      };
+    });
+
+    const primaryGemAccount = updatedTournamentAccounts['gem_radar_12to6'] || Object.values(updatedTournamentAccounts)[0];
 
     lastTickTimestamp = Date.now();
     totalTicksExecuted += 1;
@@ -53,10 +74,11 @@ export async function executeBotTick(): Promise<StoredBotState> {
         logs: newCopyLogs,
       },
       gemRadarBot: {
-        portfolio: gemRes.updatedPortfolio,
-        positions: gemRes.updatedPositions,
-        logs: newGemLogs,
+        portfolio: primaryGemAccount.portfolio,
+        positions: primaryGemAccount.positions,
+        logs: primaryGemAccount.logs,
       },
+      tournamentAccounts: updatedTournamentAccounts,
       lastServerTickTimestamp: lastTickTimestamp,
       totalTicksExecuted: (currentState.totalTicksExecuted || 0) + 1,
       workerStartedAt: currentState.workerStartedAt || workerStartedAt,

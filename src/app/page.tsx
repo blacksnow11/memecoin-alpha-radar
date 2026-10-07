@@ -8,7 +8,7 @@ import { WalletInspectorModal } from '@/components/WalletInspectorModal';
 import { BotExporterModal } from '@/components/BotExporterModal';
 import { DemoTradingStudio } from '@/components/DemoTradingStudio';
 import { RecordedLogsViewer } from '@/components/RecordedLogsViewer';
-import { ChainId, DecisionLog, DemoPortfolio, DemoPosition, ProfitLadderAnalytics, WalletProfile, ServerWorkerStatus } from '@/lib/types';
+import { BotAccountProfile, ChainId, DecisionLog, DemoPortfolio, DemoPosition, ProfitLadderAnalytics, WalletProfile, ServerWorkerStatus } from '@/lib/types';
 import {
   DEFAULT_DEMO_PORTFOLIO,
   DEFAULT_GEM_RADAR_PORTFOLIO,
@@ -52,15 +52,30 @@ export default function Home() {
   const [gemPositions, setGemPositions] = useState<DemoPosition[]>([]);
   const [gemLogs, setGemLogs] = useState<DecisionLog[]>(INITIAL_GEM_RADAR_LOGS);
 
+  // V3.3 Alpha Schedule Tournament Multi-Account State
+  const [tournamentAccounts, setTournamentAccounts] = useState<Record<string, BotAccountProfile>>({});
+  const [selectedTournamentAccountId, setSelectedTournamentAccountId] = useState<string>('gem_radar_12to6');
+
   // Profitability Milestone Ladder Analytics
   const [profitLadder, setProfitLadder] = useState<ProfitLadderAnalytics | null>(null);
 
   // 24/7 Autonomous Server Worker Telemetry
   const [serverWorker, setServerWorker] = useState<ServerWorkerStatus | null>(null);
 
-  const activePortfolio = botMode === 'gem_radar' ? gemPortfolio : copyPortfolio;
-  const activePositions = botMode === 'gem_radar' ? gemPositions : copyPositions;
-  const activeLogs = botMode === 'gem_radar' ? gemLogs : copyLogs;
+  const selectedTourneyAccount = tournamentAccounts[selectedTournamentAccountId];
+
+  const activePortfolio =
+    botMode === 'gem_radar'
+      ? selectedTourneyAccount?.portfolio || gemPortfolio
+      : copyPortfolio;
+  const activePositions =
+    botMode === 'gem_radar'
+      ? selectedTourneyAccount?.positions || gemPositions
+      : copyPositions;
+  const activeLogs =
+    botMode === 'gem_radar'
+      ? selectedTourneyAccount?.logs || gemLogs
+      : copyLogs;
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -112,6 +127,9 @@ export default function Home() {
         if (data.serverWorker) {
           setServerWorker(data.serverWorker);
         }
+        if (data.tournamentAccounts) {
+          setTournamentAccounts(data.tournamentAccounts);
+        }
         if (data.profitLadder) {
           setProfitLadder(data.profitLadder);
         }
@@ -154,6 +172,9 @@ export default function Home() {
         if (data.serverWorker) {
           setServerWorker(data.serverWorker);
         }
+        if (data.tournamentAccounts) {
+          setTournamentAccounts(data.tournamentAccounts);
+        }
         if (data.profitLadder) {
           setProfitLadder(data.profitLadder);
         }
@@ -183,6 +204,9 @@ export default function Home() {
           setGemPositions(data.gemRadarBot.positions || []);
           setGemLogs(data.gemRadarBot.logs || []);
         }
+        if (data.tournamentAccounts) {
+          setTournamentAccounts(data.tournamentAccounts);
+        }
         showToast(`Successfully reloaded $100.00 into ${botMode === 'gem_radar' ? 'Gem Radar' : 'Copy'} Bot!`);
       }
     } catch (err) {
@@ -210,10 +234,13 @@ export default function Home() {
           setGemPositions(data.gemRadarBot.positions || []);
           setGemLogs(data.gemRadarBot.logs || []);
         }
+        if (data.tournamentAccounts) {
+          setTournamentAccounts(data.tournamentAccounts);
+        }
         if (data.profitLadder) {
           setProfitLadder(data.profitLadder);
         }
-        showToast('Both trading engines have been cleanly reset to pristine $1,000 baselines!');
+        showToast('All tournament accounts cleanly reset to pristine $1,000 baselines!');
       }
     } catch (err) {
       console.error('Reset error:', err);
@@ -402,6 +429,9 @@ export default function Home() {
             onSelectBotMode={setBotMode}
             copyPortfolio={copyPortfolio}
             gemPortfolio={gemPortfolio}
+            tournamentAccounts={tournamentAccounts}
+            selectedTournamentAccountId={selectedTournamentAccountId}
+            onSelectTournamentAccount={setSelectedTournamentAccountId}
             onTick={handleTick}
             onReload={handleReload}
             onReset={handleReset}

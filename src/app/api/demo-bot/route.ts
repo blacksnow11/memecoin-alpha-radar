@@ -50,9 +50,10 @@ export async function GET(request: NextRequest) {
     portfolio: state.copyBot.portfolio,
     positions: state.copyBot.positions,
     logs: state.copyBot.logs,
-    // Full Dual-Bot Engine payload
+    // Full Dual-Bot Engine payload + Tournament Accounts
     copyBot: state.copyBot,
     gemRadarBot: state.gemRadarBot,
+    tournamentAccounts: state.tournamentAccounts,
     profitLadder,
     serverWorker,
     timestamp: Date.now(),
@@ -87,6 +88,7 @@ export async function POST(request: NextRequest) {
         logs: botType === 'gem_radar' ? updatedState.gemRadarBot.logs : updatedState.copyBot.logs,
         copyBot: updatedState.copyBot,
         gemRadarBot: updatedState.gemRadarBot,
+        tournamentAccounts: updatedState.tournamentAccounts,
         profitLadder,
         serverWorker,
       });
@@ -130,6 +132,7 @@ export async function POST(request: NextRequest) {
         success: true,
         copyBot: nextState.copyBot,
         gemRadarBot: nextState.gemRadarBot,
+        tournamentAccounts: nextState.tournamentAccounts,
         serverWorker,
       });
     }
@@ -336,6 +339,7 @@ export async function POST(request: NextRequest) {
           success: true,
           copyBot: nextState.copyBot,
           gemRadarBot: nextState.gemRadarBot,
+          tournamentAccounts: nextState.tournamentAccounts,
           profitLadder,
         });
       }
@@ -356,6 +360,7 @@ export async function POST(request: NextRequest) {
         success: true,
         copyBot: nextState.copyBot,
         gemRadarBot: nextState.gemRadarBot,
+        tournamentAccounts: nextState.tournamentAccounts,
         profitLadder,
       });
     }

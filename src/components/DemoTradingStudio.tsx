@@ -34,7 +34,16 @@ import {
   Activity,
   Trash2,
 } from 'lucide-react';
-import { DemoClosedTrade, DemoPortfolio, DemoPosition, PeriodicPnlSummary, ProfitLadderAnalytics, ServerWorkerStatus } from '@/lib/types';
+import {
+  BotAccountProfile,
+  DemoClosedTrade,
+  DemoPortfolio,
+  DemoPosition,
+  PeriodicPnlSummary,
+  ProfitLadderAnalytics,
+  ServerWorkerStatus,
+  TournamentAccountId,
+} from '@/lib/types';
 import { SUPPORTED_CHAINS, formatUsd, getExplorerAddressUrl } from '@/lib/chains';
 import {
   aggregatePnlByDay,
@@ -46,6 +55,8 @@ import {
   computeHourlyPerformanceStats,
   isWithinActiveTradingHours,
   calculateTradeAllocation,
+  TOURNAMENT_ACCOUNT_CONFIGS,
+  isAccountInSleepWindow,
 } from '@/lib/demo-trading-engine';
 
 interface DemoTradingStudioProps {
@@ -55,6 +66,9 @@ interface DemoTradingStudioProps {
   onSelectBotMode?: (mode: 'copy' | 'gem_radar') => void;
   copyPortfolio?: DemoPortfolio;
   gemPortfolio?: DemoPortfolio;
+  tournamentAccounts?: Record<string, BotAccountProfile>;
+  selectedTournamentAccountId?: string;
+  onSelectTournamentAccount?: (id: string) => void;
   onTick: () => void;
   onReload: () => void;
   onReset?: () => void;
@@ -100,6 +114,9 @@ export function DemoTradingStudio({
   onSelectBotMode,
   copyPortfolio,
   gemPortfolio,
+  tournamentAccounts,
+  selectedTournamentAccountId = 'gem_radar_12to6',
+  onSelectTournamentAccount,
   onTick,
   onReload,
   onReset,
@@ -147,9 +164,27 @@ export function DemoTradingStudio({
   const openPositions = positions.filter((p) => p.status === 'OPEN');
   const closedTrades = portfolio.closedTrades || [];
 
-  // V3.2 Hourly Performance Analytics & Active Hours Check
+  // V3.3 Hourly Performance Analytics & Active Hours Check
   const hourlyStats = useMemo(() => computeHourlyPerformanceStats(closedTrades), [closedTrades]);
-  const activeHoursCheck = useMemo(() => isWithinActiveTradingHours(portfolio), [portfolio]);
+  const activeHoursCheck = useMemo(() => {
+    if (botMode === 'gem_radar') {
+      const currentConfig = TOURNAMENT_ACCOUNT_CONFIGS.find((c) => c.id === selectedTournamentAccountId);
+      const sleepCheck = isAccountInSleepWindow(currentConfig);
+      return {
+        allowed: !sleepCheck.isSleeping,
+        currentUtcTime: sleepCheck.currentUtcTime,
+        reason: sleepCheck.reason,
+        isNightShield: sleepCheck.isNightShieldActive,
+      };
+    }
+    const legacy = isWithinActiveTradingHours(portfolio);
+    return {
+      allowed: legacy.allowed,
+      currentUtcTime: legacy.currentUtcTime,
+      reason: legacy.reason,
+      isNightShield: legacy.isNightShield || false,
+    };
+  }, [botMode, selectedTournamentAccountId, portfolio]);
   const currentTradeAllocation = useMemo(() => calculateTradeAllocation(portfolio), [portfolio]);
 
   // MFE Profitability Ladder Analytics
@@ -580,6 +615,106 @@ export function DemoTradingStudio({
         </button>
       </div>
 
+      {/* Alpha Schedule Tournament (Night Windows Benchmark) */}
+      {botMode === 'gem_radar' && (
+        <div className="bg-cyber-card rounded-2xl border border-amber-500/30 p-4 space-y-3 shadow-xl">
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 border-b border-cyber-border/70 pb-2.5">
+            <div className="flex items-center space-x-2">
+              <div className="p-1.5 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-400">
+                <Target className="w-4 h-4" />
+              </div>
+              <div>
+                <h3 className="text-xs font-black text-white uppercase tracking-wider flex items-center space-x-2">
+                  <span>Alpha Schedule Tournament</span>
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40">
+                    Night Windows Benchmark
+                  </span>
+                </h3>
+                <p className="text-[11px] text-slate-400">
+                  Testing progressive night sleep windows with identical $1,000 baselines. Daytime (06:00–24:00 UTC) is 100% active on all accounts!
+                </p>
+              </div>
+            </div>
+            <div className="text-[10px] font-mono text-slate-400 px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-800">
+              Live UTC: {new Date().toISOString().substring(11, 16)} UTC
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            {TOURNAMENT_ACCOUNT_CONFIGS.map((cfg) => {
+              const acc = tournamentAccounts?.[cfg.id];
+              const p = acc?.portfolio || (cfg.id === selectedTournamentAccountId ? portfolio : acc?.portfolio || portfolio);
+              const sleepStatus = isAccountInSleepWindow(cfg);
+              const isSelected = selectedTournamentAccountId === cfg.id;
+              const pnl = p.totalRealizedPnlUsd || 0;
+              const isProfit = pnl >= 0;
+
+              return (
+                <button
+                  key={cfg.id}
+                  onClick={() => onSelectTournamentAccount && onSelectTournamentAccount(cfg.id)}
+                  className={`text-left p-3 rounded-xl border transition-all flex flex-col justify-between ${
+                    isSelected
+                      ? 'bg-amber-950/40 border-amber-500/80 shadow-lg shadow-amber-900/20 ring-1 ring-amber-500/50'
+                      : 'bg-slate-950/70 border-slate-800 hover:border-slate-700 hover:bg-slate-900/50'
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-1 w-full">
+                    <div>
+                      <div className="text-xs font-bold text-white flex items-center space-x-1.5">
+                        <span>{cfg.name}</span>
+                        {isSelected && (
+                          <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+                        )}
+                      </div>
+                      <div className="text-[10px] text-slate-400 mt-0.5 font-mono">
+                        {cfg.badgeLabel}
+                      </div>
+                    </div>
+                    <span
+                      className={`text-[9px] px-1.5 py-0.5 rounded font-mono font-bold whitespace-nowrap ${
+                        sleepStatus.isSleeping
+                          ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                          : sleepStatus.isNightShieldActive
+                          ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30'
+                          : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                      }`}
+                    >
+                      {sleepStatus.isSleeping ? '🌙 SLEEP' : sleepStatus.isNightShieldActive ? '🛡️ SHIELD' : '🟢 ACTIVE'}
+                    </span>
+                  </div>
+
+                  <div className="mt-3 pt-2 border-t border-slate-800/80 flex items-center justify-between w-full">
+                    <div>
+                      <div className="text-[10px] text-slate-400 uppercase font-semibold">Equity</div>
+                      <div className="text-sm font-black text-white font-mono">
+                        ${(p.totalEquityUsd || 1000).toFixed(2)}
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-[10px] text-slate-400 uppercase font-semibold">Net P&L</div>
+                      <div
+                        className={`text-xs font-black font-mono ${
+                          isProfit ? 'text-emerald-400' : 'text-rose-400'
+                        }`}
+                      >
+                        {isProfit ? '+' : ''}${pnl.toFixed(2)}
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-[10px] text-slate-400 uppercase font-semibold">Win Rate</div>
+                      <div className="text-xs font-bold text-slate-200 font-mono">
+                        {p.winRate || 0}% ({p.totalWins + p.totalLosses}T)
+                      </div>
+                    </div>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {/* 24/7 Autonomous Server Daemon Live Status Banner */}
       <div className="bg-gradient-to-r from-slate-900/95 via-emerald-950/20 to-slate-900/95 border border-emerald-500/30 rounded-2xl p-4 shadow-xl flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
         <div className="flex items-center space-x-3">
@@ -869,31 +1004,47 @@ export function DemoTradingStudio({
           </div>
         </div>
 
-        {/* V3.2 Institutional Risk Budgeting & Sleep Protection Status */}
+        {/* V3.3 Institutional Risk Budgeting, Night Sleep Protection & Rug Shield */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3 bg-slate-900/90 p-3 rounded-xl border border-indigo-500/30 text-xs">
-          {/* Active Hours / Sleep Protection Guard */}
+          {/* Active Hours / Night Sleep Protection Guard */}
           <div className="flex items-center justify-between p-2.5 bg-slate-950/70 rounded-lg border border-slate-800">
             <div className="flex items-center space-x-2.5">
               <div className={`w-2.5 h-2.5 rounded-full ${activeHoursCheck.allowed ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
               <div>
                 <div className="text-[10px] text-slate-400 uppercase font-semibold">Active Market Window</div>
                 <div className="font-bold text-white text-xs mt-0.5 flex items-center space-x-1.5">
-                  <span>{activeHoursCheck.allowed ? '🟢 Live US Market Session' : '🌙 Sleep Protection Active'}</span>
+                  <span>
+                    {activeHoursCheck.allowed
+                      ? activeHoursCheck.isNightShield
+                        ? '🛡️ Night Shield Mode'
+                        : '🟢 Live Trading Session'
+                      : '🌙 Night Sleep Active'}
+                  </span>
                   <span className="text-[10px] font-mono text-slate-400 font-normal">({activeHoursCheck.currentUtcTime})</span>
                 </div>
               </div>
             </div>
             <div className="text-right">
-              <span className={`text-[10px] px-2 py-0.5 rounded font-mono font-medium ${activeHoursCheck.allowed ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'}`}>
-                {activeHoursCheck.allowed ? '13:30 - 22:00 UTC' : 'New Entries Paused'}
+              <span className={`text-[10px] px-2 py-0.5 rounded font-mono font-medium ${
+                activeHoursCheck.allowed
+                  ? activeHoursCheck.isNightShield
+                    ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30'
+                    : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                  : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+              }`}>
+                {activeHoursCheck.allowed
+                  ? activeHoursCheck.isNightShield
+                    ? 'Night Shield: Liq ≥$75k'
+                    : 'Daytime 100% Active'
+                  : 'Night Sleep Paused'}
               </span>
             </div>
           </div>
 
-          {/* Institutional Risk Budgeting Sizing Formula */}
+          {/* Institutional Risk Budgeting Sizing Formula & Rug Shield */}
           <div className="flex items-center justify-between p-2.5 bg-slate-950/70 rounded-lg border border-slate-800">
             <div>
-              <div className="text-[10px] text-slate-400 uppercase font-semibold">Risk Budgeting Formula (12 Slots)</div>
+              <div className="text-[10px] text-slate-400 uppercase font-semibold">Sizing Formula + Rug Shield</div>
               <div className="font-bold text-white text-xs mt-0.5 flex items-center space-x-1.5">
                 <span className="text-cyber-accent font-mono">${currentTradeAllocation.toFixed(2)}/trade</span>
                 <span className="text-[10px] text-slate-400 font-mono font-normal">(${portfolio.totalEquityUsd.toFixed(0)} ÷ 12)</span>
@@ -901,7 +1052,7 @@ export function DemoTradingStudio({
             </div>
             <div className="text-right">
               <span className="text-[10px] px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 font-mono">
-                5 Concur + 4 DD + 2 Safety
+                Microcaps &lt;$50k Capped @ $40
               </span>
             </div>
           </div>

@@ -6,10 +6,11 @@ import {
   DEFAULT_GEM_RADAR_PORTFOLIO,
   INITIAL_DECISION_LOGS,
   INITIAL_GEM_RADAR_LOGS,
+  createDefaultTournamentAccounts,
 } from './demo-trading-engine';
-import { DecisionLog, DemoPortfolio, DemoPosition } from './types';
+import { BotAccountProfile, DecisionLog, DemoPortfolio, DemoPosition } from './types';
 
-export const CURRENT_STATE_VERSION = 13;
+export const CURRENT_STATE_VERSION = 14;
 
 export interface StoredBotState {
   version?: number;
@@ -23,6 +24,7 @@ export interface StoredBotState {
     positions: DemoPosition[];
     logs: DecisionLog[];
   };
+  tournamentAccounts: Record<string, BotAccountProfile>;
   lastServerTickTimestamp: number;
   totalTicksExecuted: number;
   workerStartedAt: number;
@@ -48,6 +50,9 @@ function resolveStoragePath(): string {
 }
 
 export function getInitialState(): StoredBotState {
+  const tournamentAccounts = createDefaultTournamentAccounts();
+  const defaultGemAccount = tournamentAccounts['gem_radar_12to6'];
+
   return {
     version: CURRENT_STATE_VERSION,
     copyBot: {
@@ -60,14 +65,11 @@ export function getInitialState(): StoredBotState {
       logs: [...INITIAL_DECISION_LOGS],
     },
     gemRadarBot: {
-      portfolio: {
-        ...DEFAULT_GEM_RADAR_PORTFOLIO,
-        equityHistory: [{ timestamp: Date.now(), equityUsd: 1000.00 }],
-        closedTrades: [],
-      },
-      positions: [],
-      logs: [...INITIAL_GEM_RADAR_LOGS],
+      portfolio: defaultGemAccount.portfolio,
+      positions: defaultGemAccount.positions,
+      logs: defaultGemAccount.logs,
     },
+    tournamentAccounts,
     lastServerTickTimestamp: 0,
     totalTicksExecuted: 0,
     workerStartedAt: Date.now(),
@@ -102,9 +104,9 @@ export function loadBotStateFromDisk(): StoredBotState {
       const raw = fs.readFileSync(targetFile, 'utf-8');
       const parsed = JSON.parse(raw);
       if (parsed && parsed.copyBot && parsed.gemRadarBot) {
-        // Auto-Migration & Reset: Version 12 resets to pristine clean slate with V3.1 upgrades (+10% breakeven ratchet, $7.5k 5m volume floor, fast-drop momentum cut, real-time concurrency & drawdown tracking)
-        if (!parsed.version || parsed.version < CURRENT_STATE_VERSION) {
-          console.log(`[BotStorage] Auto-migrating state to Version ${CURRENT_STATE_VERSION}: clean-slate reset with V3.1 upgrades (+10% breakeven ratchet, $7.5k 5m volume floor, fast-drop momentum cut, real-time concurrency & drawdown tracking)`);
+        // Auto-Migration & Reset: Version 14 initializes the V3.3 Multi-Account Schedule Tournament (12am-6am, 2am-6am, 4am-6am, 24/7) and Rug Shield
+        if (!parsed.version || parsed.version < CURRENT_STATE_VERSION || !parsed.tournamentAccounts) {
+          console.log(`[BotStorage] Auto-migrating state to Version ${CURRENT_STATE_VERSION}: clean-slate reset with V3.3 Multi-Account Schedule Tournament and Rug Shield`);
           const fresh = getInitialState();
           memoryState = fresh;
           saveBotStateToDisk(fresh);
