@@ -10,7 +10,7 @@ import {
 } from './demo-trading-engine';
 import { BotAccountProfile, DecisionLog, DemoPortfolio, DemoPosition } from './types';
 
-export const CURRENT_STATE_VERSION = 14;
+export const CURRENT_STATE_VERSION = 15;
 
 export interface StoredBotState {
   version?: number;
@@ -104,9 +104,9 @@ export function loadBotStateFromDisk(): StoredBotState {
       const raw = fs.readFileSync(targetFile, 'utf-8');
       const parsed = JSON.parse(raw);
       if (parsed && parsed.copyBot && parsed.gemRadarBot) {
-        // Auto-Migration & Reset: Version 14 initializes the V3.3 Multi-Account Schedule Tournament (12am-6am, 2am-6am, 4am-6am, 24/7) and Rug Shield
+        // Auto-Migration & Reset: Version 15 initializes V3.4 clean-slate reset with Real & Sellable Verification
         if (!parsed.version || parsed.version < CURRENT_STATE_VERSION || !parsed.tournamentAccounts) {
-          console.log(`[BotStorage] Auto-migrating state to Version ${CURRENT_STATE_VERSION}: clean-slate reset with V3.3 Multi-Account Schedule Tournament and Rug Shield`);
+          console.log(`[BotStorage] Auto-migrating state to Version ${CURRENT_STATE_VERSION}: clean-slate reset with V3.4 Real & Sellable Verification`);
           const fresh = getInitialState();
           memoryState = fresh;
           saveBotStateToDisk(fresh);

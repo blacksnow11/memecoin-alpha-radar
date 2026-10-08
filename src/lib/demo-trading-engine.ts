@@ -290,6 +290,15 @@ export function calculateTradeAllocation(portfolio: DemoPortfolio, tokenLiquidit
     allocation = Math.min(allocation, 40);
   }
 
+  // Pool-Depth Safety Guard:
+  // Never allocate more than 2% of the token's total pool liquidity, preventing outsized orders in shallow pools
+  if (typeof tokenLiquidityUsd === 'number' && tokenLiquidityUsd > 0) {
+    const maxPoolShare = Math.round(tokenLiquidityUsd * 0.02);
+    if (maxPoolShare > 0) {
+      allocation = Math.min(allocation, maxPoolShare);
+    }
+  }
+
   return Math.max(1, Math.min(allocation, portfolio.currentCash));
 }
 
@@ -900,7 +909,18 @@ export async function runCopyBotTick(
     if (pos.status === 'CLOSED') continue;
 
     const livePriceData = await fetchSolanaTokenPrice(pos.tokenAddress, pos.pairAddress);
-    const newPrice = livePriceData.priceUsd > 0 ? livePriceData.priceUsd : pos.currentPriceUsd;
+    let newPrice = livePriceData.priceUsd > 0 ? livePriceData.priceUsd : pos.currentPriceUsd;
+
+    // AMM Real-World Sellability & FDV Consistency Check:
+    // If an extreme price jump is reported (>5x from current price), verify that marketCap/FDV is consistent.
+    // If FDV implies an absurdly small token supply (< 1,000 tokens), reject the quote misattribution.
+    if (pos.currentPriceUsd > 0 && newPrice / pos.currentPriceUsd > 5.0 && livePriceData.marketCapUsd) {
+      const impliedSupply = livePriceData.marketCapUsd / newPrice;
+      if (impliedSupply < 1000) {
+        console.warn(`[OracleSanity] Detected quote misattribution on ${pos.tokenSymbol}: price $${newPrice} inconsistent with FDV $${livePriceData.marketCapUsd}. Retaining previous price.`);
+        newPrice = pos.currentPriceUsd;
+      }
+    }
     if (livePriceData.liquidityUsd) {
       pos.currentLiquidityUsd = livePriceData.liquidityUsd;
     }
@@ -1820,7 +1840,18 @@ export async function runGemRadarBotTick(
     if (pos.status === 'CLOSED') continue;
 
     const livePriceData = await fetchSolanaTokenPrice(pos.tokenAddress, pos.pairAddress);
-    const newPrice = livePriceData.priceUsd > 0 ? livePriceData.priceUsd : pos.currentPriceUsd;
+    let newPrice = livePriceData.priceUsd > 0 ? livePriceData.priceUsd : pos.currentPriceUsd;
+
+    // AMM Real-World Sellability & FDV Consistency Check:
+    // If an extreme price jump is reported (>5x from current price), verify that marketCap/FDV is consistent.
+    // If FDV implies an absurdly small token supply (< 1,000 tokens), reject the quote misattribution.
+    if (pos.currentPriceUsd > 0 && newPrice / pos.currentPriceUsd > 5.0 && livePriceData.marketCapUsd) {
+      const impliedSupply = livePriceData.marketCapUsd / newPrice;
+      if (impliedSupply < 1000) {
+        console.warn(`[OracleSanity] Detected quote misattribution on ${pos.tokenSymbol}: price $${newPrice} inconsistent with FDV $${livePriceData.marketCapUsd}. Retaining previous price.`);
+        newPrice = pos.currentPriceUsd;
+      }
+    }
     if (livePriceData.liquidityUsd) {
       pos.currentLiquidityUsd = livePriceData.liquidityUsd;
     }

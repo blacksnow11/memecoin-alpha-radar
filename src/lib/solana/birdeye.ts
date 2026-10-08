@@ -127,21 +127,75 @@ export async function fetchSolanaTokenPrice(
     const dsRes = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${mintAddress}`);
     if (dsRes.ok) {
       const dsData = await dsRes.json();
-      const solPairs: any[] = (dsData.pairs || []).filter((p: any) => p.chainId === 'solana');
-      // Sort by highest liquidity descending to guarantee we always target the primary pool
-      solPairs.sort((a: any, b: any) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0));
+      const allSolPairs: any[] = (dsData.pairs || []).filter((p: any) => p.chainId === 'solana');
 
-      // If specific pairAddress is requested, locate that exact pool first
+      // Helper 1: Verify token is the BASE token of the pool (so priceUsd is actually this token's price)
+      const isBaseToken = (p: any) => p.baseToken?.address?.toLowerCase() === mintAddress.toLowerCase();
+
+      // Helper 2: Check if pool is quoted in real, sellable routes (SOL, WSOL, USDC)
+      const isNativeQuote = (p: any) => {
+        const sym = (p.quoteToken?.symbol || '').toUpperCase();
+        const addr = (p.quoteToken?.address || '').toLowerCase();
+        return (
+          sym === 'SOL' ||
+          sym === 'WSOL' ||
+          sym === 'USDC' ||
+          addr === 'so11111111111111111111111111111111111111112' ||
+          addr === 'epjfwdd5aufqssqem2qn1xzybapc8g4weggkzwytdt1v'
+        );
+      };
+
+      // Rank pairs:
+      // Priority 1: Base token matches mintAddress
+      // Priority 2: Quoted in SOL or USDC (real sellable liquidity route)
+      // Priority 3: Deepest pool liquidity
+      const rankedPairs = [...allSolPairs].sort((a: any, b: any) => {
+        const aBase = isBaseToken(a) ? 1 : 0;
+        const bBase = isBaseToken(b) ? 1 : 0;
+        if (aBase !== bBase) return bBase - aBase;
+
+        const aNative = isNativeQuote(a) ? 1 : 0;
+        const bNative = isNativeQuote(b) ? 1 : 0;
+        if (aNative !== bNative) return bNative - aNative;
+
+        return (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0);
+      });
+
+      // Primary native pair (anchor benchmark for real sellable execution)
+      const primaryNativePair = rankedPairs.find((p: any) => isBaseToken(p) && isNativeQuote(p)) || rankedPairs[0];
+
+      // If specific pairAddress is requested, locate that pool
       let solPair = pairAddress
-        ? solPairs.find((p: any) => p.pairAddress?.toLowerCase() === pairAddress.toLowerCase())
+        ? rankedPairs.find((p: any) => p.pairAddress?.toLowerCase() === pairAddress.toLowerCase())
         : null;
 
       if (!solPair) {
-        solPair = solPairs[0] || dsData.pairs?.[0];
+        solPair = primaryNativePair || allSolPairs[0];
+      }
+
+      // Cross-check: If specific pool is an exotic non-SOL pair, verify against primary native SOL/USDC pair
+      // to ensure cross-rate consistency and prevent misattributed quote prices (e.g. RAYCAT / RAY reading RAY's price)
+      if (solPair && primaryNativePair && solPair.pairAddress !== primaryNativePair.pairAddress) {
+        const exoticPrice = parseFloat(solPair.priceUsd || '0');
+        const nativePrice = parseFloat(primaryNativePair.priceUsd || '0');
+        if (nativePrice > 0 && exoticPrice > 0) {
+          const ratio = exoticPrice / nativePrice;
+          if (ratio > 5.0 || ratio < 0.2) {
+            console.warn(`[DexScreener] Exotic pool price ($${exoticPrice}) diverges significantly from native SOL pool ($${nativePrice}) on ${mintAddress}. Routing to primary sellable pool.`);
+            solPair = primaryNativePair;
+          }
+        }
       }
 
       if (solPair && solPair.priceUsd) {
-        const priceUsd = parseFloat(solPair.priceUsd);
+        let priceUsd = parseFloat(solPair.priceUsd);
+        const fdv = solPair.fdv || solPair.marketCap || 0;
+        if (fdv > 0 && priceUsd > 0) {
+          const impliedTokens = fdv / priceUsd;
+          if (impliedTokens < 1000 && primaryNativePair && primaryNativePair !== solPair) {
+            priceUsd = parseFloat(primaryNativePair.priceUsd || String(priceUsd));
+          }
+        }
         const priceChange24h = solPair.priceChange?.h24 || 0;
         const liquidityUsd = solPair.liquidity?.usd;
         const marketCapUsd = solPair.marketCap || solPair.fdv;
