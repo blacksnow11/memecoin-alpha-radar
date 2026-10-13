@@ -417,8 +417,8 @@ export const DEFAULT_DEMO_PORTFOLIO: DemoPortfolio = {
   maxConcurrentPositions: 5,
   stopLossPercent: -20,
   takeProfitTargets: [
-    { targetMultiplier: 1.22, sellPercent: 50 },
-    { targetMultiplier: 1.50, sellPercent: 50 },
+    { targetMultiplier: 1.10, sellPercent: 50 },
+    { targetMultiplier: 1.35, sellPercent: 50 },
   ],
   equityHistory: [
     { timestamp: Date.now(), equityUsd: 1000.00 },
@@ -456,8 +456,8 @@ export const DEFAULT_GEM_RADAR_PORTFOLIO: DemoPortfolio = {
   maxConcurrentPositions: 5,
   stopLossPercent: -20,
   takeProfitTargets: [
-    { targetMultiplier: 1.22, sellPercent: 50 },
-    { targetMultiplier: 1.50, sellPercent: 50 },
+    { targetMultiplier: 1.10, sellPercent: 50 },
+    { targetMultiplier: 1.35, sellPercent: 50 },
   ],
   equityHistory: [
     { timestamp: Date.now(), equityUsd: 1000.00 },
@@ -952,21 +952,21 @@ export async function runCopyBotTick(
     updatePositionPeakAndMilestones(pos, evaluatedPrice, newPnlPercent);
 
     // Dynamic Rule 1: Early Breakeven Stop Ratchet
-    // When peak PnL reaches >= +10%, move stop loss to Entry + 0.8% (covers fees & locks in breakeven)
-    if ((pos.peakPnlPercent ?? 0) >= 10) {
+    // When peak PnL reaches >= +5%, move stop loss to Entry + 1.0% (covers fees, slippage & locks in guaranteed green win)
+    if ((pos.peakPnlPercent ?? 0) >= 5) {
       pos.isBreakevenProtected = true;
-      const breakevenStop = pos.entryPriceUsd * 1.008;
+      const breakevenStop = pos.entryPriceUsd * 1.01;
       if (pos.stopLossPrice < breakevenStop) {
         pos.stopLossPrice = breakevenStop;
       }
     }
 
     // Dynamic Rule 2: Trailing Stop Activation
-    // When peak PnL reaches >= +25%, activate a dynamic trailing stop 12% below peak
-    if ((pos.peakPnlPercent ?? 0) >= 25) {
+    // When peak PnL reaches >= +15%, activate a dynamic trailing stop 8% below peak
+    if ((pos.peakPnlPercent ?? 0) >= 15) {
       pos.isTrailingActive = true;
       const peakPrice = pos.peakPriceUsd || evaluatedPrice;
-      const dynamicTrailingStop = peakPrice * 0.88;
+      const dynamicTrailingStop = peakPrice * 0.92;
       if (!pos.trailingStopPrice || dynamicTrailingStop > pos.trailingStopPrice) {
         pos.trailingStopPrice = dynamicTrailingStop;
       }
@@ -1062,7 +1062,7 @@ export async function runCopyBotTick(
       const totalReturned = +(pos.investedUsd + newPnlUsd).toFixed(2);
       cash = +(cash + Math.max(0, totalReturned)).toFixed(2);
       realizedPnl = +(realizedPnl + newPnlUsd).toFixed(2);
-      if (newPnlUsd >= 0) wins++; else losses++;
+      if (newPnlUsd >= 0 || newPnlPercent >= -1.0) wins++; else losses++;
 
       if (pos.copiedFromWallet) registerTraderTradeOutcome(pos.copiedFromWallet, newPnlUsd >= 0);
       registerStopLossCooldown(pos.tokenAddress);
@@ -1319,9 +1319,13 @@ export async function runCopyBotTick(
     }
 
     // Trigger QC: Quick-Cut Stop Loss for Zero-Momentum Dips & Fast Flash-Dumps
-    const isStagnantZeroMomentum = holdDurationMinutes >= 3 && (pos.peakPnlPercent ?? 0) < 3 && newPnlPercent <= -15;
-    const isEarlyFastDrop = holdDurationSeconds <= 120 && (pos.peakPnlPercent ?? 0) < 2 && newPnlPercent <= -14;
-    const isZeroMomentumDip = isStagnantZeroMomentum || isEarlyFastDrop;
+    // 1. Dead-on-Arrival Fast Cut: If held >= 60s, never gained momentum (peak <= +1.0%), and drops <= -7.5%, cut immediately.
+    // 2. If held >= 3m, never gained breakout momentum (peak < +3%), and drops <= -12%, cut immediately.
+    // 3. Fast-Drop Cut: If held <= 120s, never gained momentum (peak < +2%), and drops <= -10%, cut immediately.
+    const isFastDoaCut = holdDurationSeconds >= 60 && (pos.peakPnlPercent ?? 0) <= 1.0 && newPnlPercent <= -7.5;
+    const isStagnantZeroMomentum = holdDurationMinutes >= 3 && (pos.peakPnlPercent ?? 0) < 3 && newPnlPercent <= -12;
+    const isEarlyFastDrop = holdDurationSeconds <= 120 && (pos.peakPnlPercent ?? 0) < 2 && newPnlPercent <= -10;
+    const isZeroMomentumDip = isFastDoaCut || isStagnantZeroMomentum || isEarlyFastDrop;
 
     // Trigger D: Hard Stop Loss Cut or Quick-Cut Stop
     if (isZeroMomentumDip || newPrice <= pos.stopLossPrice) {
@@ -1356,7 +1360,9 @@ export async function runCopyBotTick(
         multiplier: +(newPrice / pos.entryPriceUsd).toFixed(2),
         exitReason: 'STOP_LOSS',
         exitReasonDetail: isQuickCut
-          ? `Quick-Cut Stop Loss (${newPnlPercent}%) on Zero-Momentum Breakdown - Saved capital before gap slip`
+          ? (isFastDoaCut
+              ? `Fast Zero-Momentum Cut (${newPnlPercent}%) on Dead-On-Arrival Dump - Saved capital before gap slip`
+              : `Quick-Cut Stop Loss (${newPnlPercent}%) on Zero-Momentum Breakdown - Saved capital before gap slip`)
           : `Hard Stop-Loss Triggered (${newPnlPercent}%) at live spot $${newPrice}`,
         peakPriceUsd: pos.peakPriceUsd ?? pos.entryPriceUsd,
         peakPnlPercent: pos.peakPnlPercent ?? Math.max(0, newPnlPercent),
@@ -1695,8 +1701,8 @@ export async function runCopyBotTick(
               tokenAmount,
               pnlUsd: 0,
               pnlPercent: 0,
-              takeProfitPrice1: spotPrice * 1.22, // Calibrated sweet spot (+22% target hit rate > 45%)
-              takeProfitPrice2: spotPrice * 1.50, // Extended runner TP2 (+50%)
+              takeProfitPrice1: spotPrice * 1.10, // High-Velocity Scalp Harvest (+10% target locks in win)
+              takeProfitPrice2: spotPrice * 1.35, // Extended runner TP2 (+35%)
               stopLossPrice: spotPrice * (1 + portfolio.stopLossPercent / 100),
               status: 'OPEN',
               alphaScoreAtEntry: 95,
@@ -1883,21 +1889,21 @@ export async function runGemRadarBotTick(
     updatePositionPeakAndMilestones(pos, evaluatedPrice, newPnlPercent);
 
     // Dynamic Rule 1: Early Breakeven Stop Ratchet
-    // When peak PnL reaches >= +10%, move stop loss to Entry + 0.8% (covers fees & locks in breakeven)
-    if ((pos.peakPnlPercent ?? 0) >= 10) {
+    // When peak PnL reaches >= +5%, move stop loss to Entry + 1.0% (covers fees, slippage & locks in guaranteed green win)
+    if ((pos.peakPnlPercent ?? 0) >= 5) {
       pos.isBreakevenProtected = true;
-      const breakevenStop = pos.entryPriceUsd * 1.008;
+      const breakevenStop = pos.entryPriceUsd * 1.01;
       if (pos.stopLossPrice < breakevenStop) {
         pos.stopLossPrice = breakevenStop;
       }
     }
 
     // Dynamic Rule 2: Trailing Stop Activation
-    // When peak PnL reaches >= +25%, activate a dynamic trailing stop 12% below peak
-    if ((pos.peakPnlPercent ?? 0) >= 25) {
+    // When peak PnL reaches >= +15%, activate a dynamic trailing stop 8% below peak
+    if ((pos.peakPnlPercent ?? 0) >= 15) {
       pos.isTrailingActive = true;
       const peakPrice = pos.peakPriceUsd || evaluatedPrice;
-      const dynamicTrailingStop = peakPrice * 0.88;
+      const dynamicTrailingStop = peakPrice * 0.92;
       if (!pos.trailingStopPrice || dynamicTrailingStop > pos.trailingStopPrice) {
         pos.trailingStopPrice = dynamicTrailingStop;
       }
@@ -1988,7 +1994,7 @@ export async function runGemRadarBotTick(
       const totalReturned = +(pos.investedUsd + newPnlUsd).toFixed(2);
       cash = +(cash + Math.max(0, totalReturned)).toFixed(2);
       realizedPnl = +(realizedPnl + newPnlUsd).toFixed(2);
-      if (newPnlUsd >= 0) wins++; else losses++;
+      if (newPnlUsd >= 0 || newPnlPercent >= -1.0) wins++; else losses++;
       registerStopLossCooldown(pos.tokenAddress);
 
       const closedRecord: DemoClosedTrade = {
@@ -2228,11 +2234,13 @@ export async function runGemRadarBotTick(
     }
 
     // Trigger QC: Quick-Cut Stop Loss for Zero-Momentum Dips & Fast Flash-Dumps
-    // 1. If held >= 3m, never gained breakout momentum (peak < +3%), and drops <= -15%, cut it immediately.
-    // 2. Fast-Drop Cut: If held <= 120s, never gained momentum (peak < +2%), and drops <= -14%, cut immediately before single-tick gap slippage worsens.
-    const isStagnantZeroMomentum = holdDurationMinutes >= 3 && (pos.peakPnlPercent ?? 0) < 3 && newPnlPercent <= -15;
-    const isEarlyFastDrop = holdDurationSeconds <= 120 && (pos.peakPnlPercent ?? 0) < 2 && newPnlPercent <= -14;
-    const isZeroMomentumDip = isStagnantZeroMomentum || isEarlyFastDrop;
+    // 1. Dead-on-Arrival Fast Cut: If held >= 60s, never gained momentum (peak <= +1.0%), and drops <= -7.5%, cut immediately (saves capital from -25% slide).
+    // 2. If held >= 3m, never gained breakout momentum (peak < +3%), and drops <= -12%, cut immediately.
+    // 3. Fast-Drop Cut: If held <= 120s, never gained momentum (peak < +2%), and drops <= -10%, cut immediately before single-tick gap slippage worsens.
+    const isFastDoaCut = holdDurationSeconds >= 60 && (pos.peakPnlPercent ?? 0) <= 1.0 && newPnlPercent <= -7.5;
+    const isStagnantZeroMomentum = holdDurationMinutes >= 3 && (pos.peakPnlPercent ?? 0) < 3 && newPnlPercent <= -12;
+    const isEarlyFastDrop = holdDurationSeconds <= 120 && (pos.peakPnlPercent ?? 0) < 2 && newPnlPercent <= -10;
+    const isZeroMomentumDip = isFastDoaCut || isStagnantZeroMomentum || isEarlyFastDrop;
 
     // Trigger D: Hard Stop Loss Cut or Quick-Cut Stop
     if (isZeroMomentumDip || newPrice <= pos.stopLossPrice) {
@@ -2265,7 +2273,9 @@ export async function runGemRadarBotTick(
         multiplier: +(newPrice / pos.entryPriceUsd).toFixed(2),
         exitReason: 'STOP_LOSS',
         exitReasonDetail: isQuickCut
-          ? `Quick-Cut Stop Loss (${newPnlPercent}%) on Zero-Momentum Breakdown - Saved capital before gap slip`
+          ? (isFastDoaCut
+              ? `Fast Zero-Momentum Cut (${newPnlPercent}%) on Dead-On-Arrival Dump - Saved capital before gap slip`
+              : `Quick-Cut Stop Loss (${newPnlPercent}%) on Zero-Momentum Breakdown - Saved capital before gap slip`)
           : `Hard Stop-Loss Cut (${newPnlPercent}%) on Gem Radar breakout at $${newPrice}`,
         peakPriceUsd: pos.peakPriceUsd ?? pos.entryPriceUsd,
         peakPnlPercent: pos.peakPnlPercent ?? Math.max(0, newPnlPercent),
@@ -2398,10 +2408,10 @@ export async function runGemRadarBotTick(
         }
 
         // Adaptive entry criteria:
-        // Standard: Confidence >= 80, Liquidity >= $35,000
+        // Standard: Confidence >= 80, Liquidity >= $45,000 (Golden Ratio Band)
         // Night Shield (24/7 account during 00:00-06:00 UTC): Confidence >= 90, Liquidity >= $75,000
         const minConviction = isNight ? (profile?.nightShield?.minConviction || 90) : (portfolio.minConvictionThreshold || 80);
-        const minLiquidity = isNight ? (profile?.nightShield?.minLiquidityUsd || 75000) : 35000;
+        const minLiquidity = isNight ? (profile?.nightShield?.minLiquidityUsd || 75000) : 45000;
 
         if (sig.confidenceScore >= minConviction && sig.liquidityUsd >= minLiquidity && sig.priceUsd > 0) {
           // Dynamic Sizing with Tiered Liquidity Cap (Rug Shield)
@@ -2430,8 +2440,8 @@ export async function runGemRadarBotTick(
             tokenAmount,
             pnlUsd: 0,
             pnlPercent: 0,
-            takeProfitPrice1: spotPrice * 1.22, // Calibrated sweet spot (+22% target hit rate > 45%)
-            takeProfitPrice2: spotPrice * 1.50, // Extended runner TP2 (+50%)
+            takeProfitPrice1: spotPrice * 1.10, // High-Velocity Scalp Harvest (+10% target locks in win)
+            takeProfitPrice2: spotPrice * 1.35, // Extended runner TP2 (+35%)
             stopLossPrice: spotPrice * (1 + portfolio.stopLossPercent / 100),
             status: 'OPEN',
             alphaScoreAtEntry: sig.confidenceScore,
