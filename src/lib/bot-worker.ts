@@ -1,4 +1,4 @@
-import { getBotState, saveBotStateToDisk, StoredBotState } from './bot-storage';
+import { getBotState, saveBotStateToDisk, StoredBotState, CURRENT_STATE_VERSION } from './bot-storage';
 import { createDefaultTournamentAccounts, runCopyBotTick, runGemRadarBotTick } from './demo-trading-engine';
 import { BotAccountProfile, ServerWorkerStatus } from './types';
 
@@ -68,6 +68,7 @@ export async function executeBotTick(): Promise<StoredBotState> {
     totalTicksExecuted += 1;
 
     const nextState: StoredBotState = {
+      version: currentState.version || CURRENT_STATE_VERSION,
       copyBot: {
         portfolio: copyRes.updatedPortfolio,
         positions: copyRes.updatedPositions,
