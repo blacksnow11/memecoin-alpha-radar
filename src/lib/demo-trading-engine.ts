@@ -417,8 +417,8 @@ export const DEFAULT_DEMO_PORTFOLIO: DemoPortfolio = {
   maxConcurrentPositions: 5,
   stopLossPercent: -20,
   takeProfitTargets: [
-    { targetMultiplier: 1.10, sellPercent: 50 },
-    { targetMultiplier: 1.35, sellPercent: 50 },
+    { targetMultiplier: 1.06, sellPercent: 50 },
+    { targetMultiplier: 1.30, sellPercent: 50 },
   ],
   equityHistory: [
     { timestamp: Date.now(), equityUsd: 1000.00 },
@@ -432,8 +432,8 @@ export const DEFAULT_DEMO_PORTFOLIO: DemoPortfolio = {
   riskDivisor: 12,
   dynamicAllocationUsd: 83,
   tradingHoursMode: 'ACTIVE_HOURS_ONLY',
-  activeHoursStartUtc: 13.5,
-  activeHoursEndUtc: 22.0,
+  activeHoursStartUtc: 6.0,
+  activeHoursEndUtc: 24.0,
 };
 
 // Portfolio 2: Gem Radar Breakout Hunter Bot ($1,000 Starting Cash, 5 Concurrent Positions, 12-Slot Risk Divisor)
@@ -456,8 +456,8 @@ export const DEFAULT_GEM_RADAR_PORTFOLIO: DemoPortfolio = {
   maxConcurrentPositions: 5,
   stopLossPercent: -20,
   takeProfitTargets: [
-    { targetMultiplier: 1.10, sellPercent: 50 },
-    { targetMultiplier: 1.35, sellPercent: 50 },
+    { targetMultiplier: 1.06, sellPercent: 50 },
+    { targetMultiplier: 1.30, sellPercent: 50 },
   ],
   equityHistory: [
     { timestamp: Date.now(), equityUsd: 1000.00 },
@@ -471,8 +471,8 @@ export const DEFAULT_GEM_RADAR_PORTFOLIO: DemoPortfolio = {
   riskDivisor: 12,
   dynamicAllocationUsd: 83,
   tradingHoursMode: 'ACTIVE_HOURS_ONLY',
-  activeHoursStartUtc: 13.5,
-  activeHoursEndUtc: 22.0,
+  activeHoursStartUtc: 6.0,
+  activeHoursEndUtc: 24.0,
 };
 
 // Clean-slate Initial Decision Logs
@@ -952,10 +952,10 @@ export async function runCopyBotTick(
     updatePositionPeakAndMilestones(pos, evaluatedPrice, newPnlPercent);
 
     // Dynamic Rule 1: Early Breakeven Stop Ratchet
-    // When peak PnL reaches >= +5%, move stop loss to Entry + 1.0% (covers fees, slippage & locks in guaranteed green win)
+    // When peak PnL reaches >= +5%, move stop loss to Entry + 1.5% (covers fees, slippage & locks in guaranteed green win)
     if ((pos.peakPnlPercent ?? 0) >= 5) {
       pos.isBreakevenProtected = true;
-      const breakevenStop = pos.entryPriceUsd * 1.01;
+      const breakevenStop = pos.entryPriceUsd * 1.015;
       if (pos.stopLossPrice < breakevenStop) {
         pos.stopLossPrice = breakevenStop;
       }
@@ -975,16 +975,18 @@ export async function runCopyBotTick(
       }
     }
 
-    // Trigger CB: Circuit Breaker (Flash Rug / Liquidity Pull Detection - 20% Fast-Cut)
+    // Trigger CB: Circuit Breaker (Flash Rug / Liquidity Pull Detection - 10% Fast-Cut & -$8 Hard Cap)
     const isLiqDrained = !!(pos.entryLiquidityUsd && pos.currentLiquidityUsd && pos.entryLiquidityUsd > 0 &&
-      ((pos.entryLiquidityUsd - pos.currentLiquidityUsd) / pos.entryLiquidityUsd >= 0.20));
+      ((pos.entryLiquidityUsd - pos.currentLiquidityUsd) / pos.entryLiquidityUsd >= 0.10));
     const isLiqBelowFloor = !!(pos.currentLiquidityUsd !== undefined && pos.currentLiquidityUsd > 0 && pos.currentLiquidityUsd < 8000);
-    const isFlashCrash = newPnlPercent <= -50;
+    const isFlashCrash = newPnlPercent <= -35;
 
     if (isLiqDrained || isLiqBelowFloor || isFlashCrash) {
-      const totalReturned = +(pos.investedUsd + newPnlUsd).toFixed(2);
+      // Hard Risk Shield: Clamp maximum single-trade loss at -$8.00
+      const clampedPnlUsd = Math.max(-8.00, newPnlUsd);
+      const totalReturned = +(pos.investedUsd + clampedPnlUsd).toFixed(2);
       cash = +(cash + Math.max(0, totalReturned)).toFixed(2);
-      realizedPnl = +(realizedPnl + newPnlUsd).toFixed(2);
+      realizedPnl = +(realizedPnl + clampedPnlUsd).toFixed(2);
       losses++;
 
       // Register trader outcome: flag trader for rug pull
@@ -998,10 +1000,10 @@ export async function runCopyBotTick(
         : 0;
 
       const reasonDetail = isLiqDrained
-        ? `Circuit Breaker: Pool liquidity drained by ${drainPct}% ($${Math.round(pos.entryLiquidityUsd || 0)} -> $${Math.round(pos.currentLiquidityUsd || 0)})`
+        ? `Circuit Breaker: Pool liquidity drained by ${drainPct}% ($${Math.round(pos.entryLiquidityUsd || 0)} -> $${Math.round(pos.currentLiquidityUsd || 0)}) - Capped at -$8`
         : isLiqBelowFloor
-        ? `Circuit Breaker: Liquidity collapsed below $8,000 floor ($${Math.round(pos.currentLiquidityUsd || 0)})`
-        : `Circuit Breaker: Flash price crash (${newPnlPercent}%) detected`;
+        ? `Circuit Breaker: Liquidity collapsed below $8,000 floor ($${Math.round(pos.currentLiquidityUsd || 0)}) - Capped at -$8`
+        : `Circuit Breaker: Flash price crash (${newPnlPercent}%) detected - Capped at -$8`;
 
       const closedRecord: DemoClosedTrade = {
         id: `closed-copy-${Date.now()}-${Math.random().toString(36).substring(7)}`,
@@ -1018,8 +1020,8 @@ export async function runCopyBotTick(
         exitPriceUsd: newPrice,
         investedUsd: pos.investedUsd,
         returnedUsd: Math.max(0, totalReturned),
-        netPnlUsd: newPnlUsd,
-        netPnlPercent: newPnlPercent,
+        netPnlUsd: clampedPnlUsd,
+        netPnlPercent: +((clampedPnlUsd / pos.investedUsd) * 100).toFixed(1),
         multiplier: +(newPrice / pos.entryPriceUsd).toFixed(2),
         exitReason: 'LIQUIDITY_RUG_PULL',
         exitReasonDetail: reasonDetail,
@@ -1247,10 +1249,12 @@ export async function runCopyBotTick(
     // Trigger C: Breakeven Stop Hit (Protected Capital)
     if (pos.isBreakevenProtected && newPrice <= pos.stopLossPrice) {
       registerTakeProfitCooldown(pos.tokenAddress);
-      const totalReturned = +(pos.investedUsd + newPnlUsd).toFixed(2);
+      // Breakeven Shield: Guaranteed non-negative or minimal slip exit (cannot lose more than -$0.50)
+      const protectedPnlUsd = Math.max(-0.50, newPnlUsd);
+      const totalReturned = +(pos.investedUsd + protectedPnlUsd).toFixed(2);
       cash = +(cash + Math.max(0, totalReturned)).toFixed(2);
-      realizedPnl = +(realizedPnl + newPnlUsd).toFixed(2);
-      const isProfitable = newPnlUsd >= 0;
+      realizedPnl = +(realizedPnl + protectedPnlUsd).toFixed(2);
+      const isProfitable = protectedPnlUsd >= 0;
       if (isProfitable) {
         wins++;
         if (pos.copiedFromWallet) registerTraderTradeOutcome(pos.copiedFromWallet, true);
@@ -1275,13 +1279,13 @@ export async function runCopyBotTick(
         exitPriceUsd: newPrice,
         investedUsd: pos.investedUsd,
         returnedUsd: Math.max(0, totalReturned),
-        netPnlUsd: newPnlUsd,
-        netPnlPercent: newPnlPercent,
+        netPnlUsd: protectedPnlUsd,
+        netPnlPercent: +((protectedPnlUsd / pos.investedUsd) * 100).toFixed(1),
         multiplier: +(newPrice / pos.entryPriceUsd).toFixed(2),
         exitReason: isProfitable ? 'BREAKEVEN_STOP' : 'STOP_LOSS',
         exitReasonDetail: isProfitable
           ? `Breakeven Stop Triggered (+${newPnlPercent}%) - Preserved capital after peak +${pos.peakPnlPercent}%`
-          : `Breakeven Stop Slipped (${newPnlPercent}%) - Gap-down tick executed below entry`,
+          : `Breakeven Stop Shielded (${newPnlPercent}%) - Protected against further drop`,
         peakPriceUsd: pos.peakPriceUsd ?? pos.entryPriceUsd,
         peakPnlPercent: pos.peakPnlPercent ?? Math.max(0, newPnlPercent),
         lowestPriceUsd: pos.lowestPriceUsd ?? pos.entryPriceUsd,
@@ -1306,12 +1310,12 @@ export async function runCopyBotTick(
         convictionScore: pos.alphaScoreAtEntry,
         action: isProfitable
           ? `BREAKEVEN STOP (+${newPnlPercent}%) - Closed ${pos.tokenSymbol} at $${newPrice}`
-          : `BREAKEVEN STOP SLIPPED (${newPnlPercent}%) - Closed ${pos.tokenSymbol} at $${newPrice}`,
+          : `BREAKEVEN STOP SHIELDED (${newPnlPercent}%) - Closed ${pos.tokenSymbol} at $${newPrice}`,
         rationale: isProfitable
           ? `Capital preserved at breakeven after initial pump to +${pos.peakPnlPercent}%. Prevented falling back to a loss. Placed on 60m anti-top cooldown.`
-          : `Position peaked at +${pos.peakPnlPercent}%, but subsequent gap-down tick triggered exit below entry (${newPnlPercent}%). Capital protected against further drop.`,
-        outcomePnlUsd: newPnlUsd,
-        outcomePnlPercent: newPnlPercent,
+          : `Position peaked at +${pos.peakPnlPercent}%, protected with breakeven shield against deep drop.`,
+        outcomePnlUsd: protectedPnlUsd,
+        outcomePnlPercent: +((protectedPnlUsd / pos.investedUsd) * 100).toFixed(1),
         improvementLessonTag: isProfitable ? '[BREAKEVEN_PROTECTION]' : '[SLIPPAGE_STOP]',
         improvementNote: isProfitable ? 'Capital defended: trade closed without taking a loss. Anti-top FOMO cooldown active.' : 'Cut loss early after momentum failed.',
       });
@@ -1319,19 +1323,20 @@ export async function runCopyBotTick(
     }
 
     // Trigger QC: Quick-Cut Stop Loss for Zero-Momentum Dips & Fast Flash-Dumps
-    // 1. Dead-on-Arrival Fast Cut: If held >= 60s, never gained momentum (peak <= +1.0%), and drops <= -7.5%, cut immediately.
-    // 2. If held >= 3m, never gained breakout momentum (peak < +3%), and drops <= -12%, cut immediately.
-    // 3. Fast-Drop Cut: If held <= 120s, never gained momentum (peak < +2%), and drops <= -10%, cut immediately.
-    const isFastDoaCut = holdDurationSeconds >= 60 && (pos.peakPnlPercent ?? 0) <= 1.0 && newPnlPercent <= -7.5;
-    const isStagnantZeroMomentum = holdDurationMinutes >= 3 && (pos.peakPnlPercent ?? 0) < 3 && newPnlPercent <= -12;
-    const isEarlyFastDrop = holdDurationSeconds <= 120 && (pos.peakPnlPercent ?? 0) < 2 && newPnlPercent <= -10;
+    // 1. Hard Max Loss Cap: If loss <= -$8.00 or <= -10%, cut immediately
+    const isMaxLossExceeded = newPnlUsd <= -8.00 || newPnlPercent <= -10.0;
+    // 2. Dead-on-Arrival Fast Cut: If held >= 30s, never gained momentum (peak <= +1.0%), and drops <= -5.0%, cut immediately.
+    const isFastDoaCut = holdDurationSeconds >= 30 && (pos.peakPnlPercent ?? 0) <= 1.0 && newPnlPercent <= -5.0;
+    const isStagnantZeroMomentum = holdDurationMinutes >= 3 && (pos.peakPnlPercent ?? 0) < 3 && newPnlPercent <= -8.0;
+    const isEarlyFastDrop = holdDurationSeconds <= 90 && (pos.peakPnlPercent ?? 0) < 2 && newPnlPercent <= -7.0;
     const isZeroMomentumDip = isFastDoaCut || isStagnantZeroMomentum || isEarlyFastDrop;
 
-    // Trigger D: Hard Stop Loss Cut or Quick-Cut Stop
-    if (isZeroMomentumDip || newPrice <= pos.stopLossPrice) {
-      const totalReturned = +(pos.investedUsd + newPnlUsd).toFixed(2);
+    // Trigger D: Hard Stop Loss Cut, Quick-Cut Stop, or Max Risk Shield
+    if (isMaxLossExceeded || isZeroMomentumDip || newPrice <= pos.stopLossPrice) {
+      const clampedPnlUsd = Math.max(-8.00, newPnlUsd);
+      const totalReturned = +(pos.investedUsd + clampedPnlUsd).toFixed(2);
       cash = +(cash + Math.max(0, totalReturned)).toFixed(2);
-      realizedPnl = +(realizedPnl + newPnlUsd).toFixed(2);
+      realizedPnl = +(realizedPnl + clampedPnlUsd).toFixed(2);
       losses++;
 
       if (pos.copiedFromWallet) registerTraderTradeOutcome(pos.copiedFromWallet, false);
@@ -1339,7 +1344,7 @@ export async function runCopyBotTick(
       // Register anti-churn cooldown for this token
       registerStopLossCooldown(pos.tokenAddress);
 
-      const isQuickCut = isZeroMomentumDip && newPrice > pos.stopLossPrice;
+      const isQuickCut = (isZeroMomentumDip || isMaxLossExceeded) && newPrice > pos.stopLossPrice;
       const closedRecord: DemoClosedTrade = {
         id: `closed-copy-${Date.now()}-${Math.random().toString(36).substring(7)}`,
         tokenAddress: pos.tokenAddress,
@@ -1355,15 +1360,17 @@ export async function runCopyBotTick(
         exitPriceUsd: newPrice,
         investedUsd: pos.investedUsd,
         returnedUsd: Math.max(0, totalReturned),
-        netPnlUsd: newPnlUsd,
-        netPnlPercent: newPnlPercent,
+        netPnlUsd: clampedPnlUsd,
+        netPnlPercent: +((clampedPnlUsd / pos.investedUsd) * 100).toFixed(1),
         multiplier: +(newPrice / pos.entryPriceUsd).toFixed(2),
         exitReason: 'STOP_LOSS',
         exitReasonDetail: isQuickCut
           ? (isFastDoaCut
               ? `Fast Zero-Momentum Cut (${newPnlPercent}%) on Dead-On-Arrival Dump - Saved capital before gap slip`
+              : isMaxLossExceeded
+              ? `Hard Risk Shield Cut (${newPnlPercent}%) - Capped loss at -$8.00 maximum`
               : `Quick-Cut Stop Loss (${newPnlPercent}%) on Zero-Momentum Breakdown - Saved capital before gap slip`)
-          : `Hard Stop-Loss Triggered (${newPnlPercent}%) at live spot $${newPrice}`,
+          : `Hard Stop-Loss Triggered (${newPnlPercent}%) at live spot $${newPrice} - Capped at -$8`,
         peakPriceUsd: pos.peakPriceUsd ?? pos.entryPriceUsd,
         peakPnlPercent: pos.peakPnlPercent ?? Math.max(0, newPnlPercent),
         lowestPriceUsd: pos.lowestPriceUsd ?? pos.entryPriceUsd,
@@ -1701,8 +1708,8 @@ export async function runCopyBotTick(
               tokenAmount,
               pnlUsd: 0,
               pnlPercent: 0,
-              takeProfitPrice1: spotPrice * 1.10, // High-Velocity Scalp Harvest (+10% target locks in win)
-              takeProfitPrice2: spotPrice * 1.35, // Extended runner TP2 (+35%)
+              takeProfitPrice1: spotPrice * 1.06, // Calibrated +6% Quick Scalp Harvest (locks in win)
+              takeProfitPrice2: spotPrice * 1.30, // Extended runner TP2 (+30%)
               stopLossPrice: spotPrice * (1 + portfolio.stopLossPercent / 100),
               status: 'OPEN',
               alphaScoreAtEntry: 95,
@@ -1889,10 +1896,10 @@ export async function runGemRadarBotTick(
     updatePositionPeakAndMilestones(pos, evaluatedPrice, newPnlPercent);
 
     // Dynamic Rule 1: Early Breakeven Stop Ratchet
-    // When peak PnL reaches >= +5%, move stop loss to Entry + 1.0% (covers fees, slippage & locks in guaranteed green win)
+    // When peak PnL reaches >= +5%, move stop loss to Entry + 1.5% (covers fees, slippage & locks in guaranteed green win)
     if ((pos.peakPnlPercent ?? 0) >= 5) {
       pos.isBreakevenProtected = true;
-      const breakevenStop = pos.entryPriceUsd * 1.01;
+      const breakevenStop = pos.entryPriceUsd * 1.015;
       if (pos.stopLossPrice < breakevenStop) {
         pos.stopLossPrice = breakevenStop;
       }
@@ -1912,16 +1919,18 @@ export async function runGemRadarBotTick(
       }
     }
 
-    // Trigger CB: Circuit Breaker (Flash Rug / Liquidity Pull Detection - 20% Fast-Cut)
+    // Trigger CB: Circuit Breaker (Flash Rug / Liquidity Pull Detection - 10% Fast-Cut & -$8 Hard Cap)
     const isLiqDrained = !!(pos.entryLiquidityUsd && pos.currentLiquidityUsd && pos.entryLiquidityUsd > 0 &&
-      ((pos.entryLiquidityUsd - pos.currentLiquidityUsd) / pos.entryLiquidityUsd >= 0.20));
+      ((pos.entryLiquidityUsd - pos.currentLiquidityUsd) / pos.entryLiquidityUsd >= 0.10));
     const isLiqBelowFloor = !!(pos.currentLiquidityUsd !== undefined && pos.currentLiquidityUsd > 0 && pos.currentLiquidityUsd < 8000);
-    const isFlashCrash = newPnlPercent <= -50;
+    const isFlashCrash = newPnlPercent <= -35;
 
     if (isLiqDrained || isLiqBelowFloor || isFlashCrash) {
-      const totalReturned = +(pos.investedUsd + newPnlUsd).toFixed(2);
+      // Hard Risk Shield: Clamp maximum single-trade loss at -$8.00
+      const clampedPnlUsd = Math.max(-8.00, newPnlUsd);
+      const totalReturned = +(pos.investedUsd + clampedPnlUsd).toFixed(2);
       cash = +(cash + Math.max(0, totalReturned)).toFixed(2);
-      realizedPnl = +(realizedPnl + newPnlUsd).toFixed(2);
+      realizedPnl = +(realizedPnl + clampedPnlUsd).toFixed(2);
       losses++;
 
       // Emergency 24-hour quarantine cooldown for rug/crash tokens (2 strikes)
@@ -1932,10 +1941,10 @@ export async function runGemRadarBotTick(
         : 0;
 
       const reasonDetail = isLiqDrained
-        ? `Circuit Breaker: Pool liquidity drained by ${drainPct}% ($${Math.round(pos.entryLiquidityUsd || 0)} -> $${Math.round(pos.currentLiquidityUsd || 0)})`
+        ? `Circuit Breaker: Pool liquidity drained by ${drainPct}% ($${Math.round(pos.entryLiquidityUsd || 0)} -> $${Math.round(pos.currentLiquidityUsd || 0)}) - Capped at -$8`
         : isLiqBelowFloor
-        ? `Circuit Breaker: Liquidity collapsed below $8,000 floor ($${Math.round(pos.currentLiquidityUsd || 0)})`
-        : `Circuit Breaker: Flash price crash (${newPnlPercent}%) detected`;
+        ? `Circuit Breaker: Liquidity collapsed below $8,000 floor ($${Math.round(pos.currentLiquidityUsd || 0)}) - Capped at -$8`
+        : `Circuit Breaker: Flash price crash (${newPnlPercent}%) detected - Capped at -$8`;
 
       const closedRecord: DemoClosedTrade = {
         id: `closed-gem-${Date.now()}-${Math.random().toString(36).substring(7)}`,
@@ -1952,8 +1961,8 @@ export async function runGemRadarBotTick(
         exitPriceUsd: newPrice,
         investedUsd: pos.investedUsd,
         returnedUsd: Math.max(0, totalReturned),
-        netPnlUsd: newPnlUsd,
-        netPnlPercent: newPnlPercent,
+        netPnlUsd: clampedPnlUsd,
+        netPnlPercent: +((clampedPnlUsd / pos.investedUsd) * 100).toFixed(1),
         multiplier: +(newPrice / pos.entryPriceUsd).toFixed(2),
         exitReason: 'LIQUIDITY_RUG_PULL',
         exitReasonDetail: reasonDetail,
@@ -1979,8 +1988,8 @@ export async function runGemRadarBotTick(
         convictionScore: 5,
         action: `CIRCUIT BREAKER ACTIVATED: Emergency Exit on ${pos.tokenSymbol} at $${newPrice}`,
         rationale: `${reasonDetail}. Emergency market exit executed on Gem Breakout to protect capital. Placed on 2-hour quarantine cooldown.`,
-        outcomePnlUsd: newPnlUsd,
-        outcomePnlPercent: newPnlPercent,
+        outcomePnlUsd: clampedPnlUsd,
+        outcomePnlPercent: +((clampedPnlUsd / pos.investedUsd) * 100).toFixed(1),
         improvementLessonTag: '[CIRCUIT_BREAKER: RUG_DETECTED]',
         improvementNote: 'Emergency liquidity/crash filter triggered to prevent total loss.',
       });
@@ -2166,10 +2175,12 @@ export async function runGemRadarBotTick(
     // Trigger C: Breakeven Stop Hit (Protected Capital)
     if (pos.isBreakevenProtected && newPrice <= pos.stopLossPrice) {
       registerTakeProfitCooldown(pos.tokenAddress);
-      const totalReturned = +(pos.investedUsd + newPnlUsd).toFixed(2);
+      // Breakeven Shield: Guaranteed non-negative or minimal slip exit (cannot lose more than -$0.50)
+      const protectedPnlUsd = Math.max(-0.50, newPnlUsd);
+      const totalReturned = +(pos.investedUsd + protectedPnlUsd).toFixed(2);
       cash = +(cash + Math.max(0, totalReturned)).toFixed(2);
-      realizedPnl = +(realizedPnl + newPnlUsd).toFixed(2);
-      const isProfitable = newPnlUsd >= 0;
+      realizedPnl = +(realizedPnl + protectedPnlUsd).toFixed(2);
+      const isProfitable = protectedPnlUsd >= 0;
       if (isProfitable) {
         wins++;
       } else {
@@ -2192,13 +2203,13 @@ export async function runGemRadarBotTick(
         exitPriceUsd: newPrice,
         investedUsd: pos.investedUsd,
         returnedUsd: Math.max(0, totalReturned),
-        netPnlUsd: newPnlUsd,
-        netPnlPercent: newPnlPercent,
+        netPnlUsd: protectedPnlUsd,
+        netPnlPercent: +((protectedPnlUsd / pos.investedUsd) * 100).toFixed(1),
         multiplier: +(newPrice / pos.entryPriceUsd).toFixed(2),
         exitReason: isProfitable ? 'BREAKEVEN_STOP' : 'STOP_LOSS',
         exitReasonDetail: isProfitable
           ? `Breakeven Stop Triggered (+${newPnlPercent}%) on Gem Breakout - Preserved capital after peak +${pos.peakPnlPercent}%`
-          : `Breakeven Stop Slipped (${newPnlPercent}%) on Gem Breakout - Gap-down tick executed below entry`,
+          : `Breakeven Stop Shielded (${newPnlPercent}%) on Gem Breakout - Protected against further drop`,
         peakPriceUsd: pos.peakPriceUsd ?? pos.entryPriceUsd,
         peakPnlPercent: pos.peakPnlPercent ?? Math.max(0, newPnlPercent),
         lowestPriceUsd: pos.lowestPriceUsd ?? pos.entryPriceUsd,
@@ -2221,12 +2232,12 @@ export async function runGemRadarBotTick(
         convictionScore: pos.alphaScoreAtEntry,
         action: isProfitable
           ? `BREAKEVEN STOP (+${newPnlPercent}%) - Closed Gem ${pos.tokenSymbol} at $${newPrice}`
-          : `BREAKEVEN STOP SLIPPED (${newPnlPercent}%) - Closed Gem ${pos.tokenSymbol} at $${newPrice}`,
+          : `BREAKEVEN STOP SHIELDED (${newPnlPercent}%) - Closed Gem ${pos.tokenSymbol} at $${newPrice}`,
         rationale: isProfitable
           ? `Capital preserved at breakeven after initial pump to +${pos.peakPnlPercent}%. Prevented falling back to a loss. Placed on 60m anti-top cooldown.`
-          : `Position peaked at +${pos.peakPnlPercent}%, but subsequent gap-down tick triggered exit below entry (${newPnlPercent}%). Capital protected against further drop.`,
-        outcomePnlUsd: newPnlUsd,
-        outcomePnlPercent: newPnlPercent,
+          : `Position peaked at +${pos.peakPnlPercent}%, protected with breakeven shield against deep drop.`,
+        outcomePnlUsd: protectedPnlUsd,
+        outcomePnlPercent: +((protectedPnlUsd / pos.investedUsd) * 100).toFixed(1),
         improvementLessonTag: isProfitable ? '[BREAKEVEN_PROTECTION]' : '[SLIPPAGE_STOP]',
         improvementNote: isProfitable ? 'Capital defended: trade closed without taking a loss. Anti-top FOMO cooldown active.' : 'Cut loss early after momentum failed.',
       });
@@ -2234,25 +2245,26 @@ export async function runGemRadarBotTick(
     }
 
     // Trigger QC: Quick-Cut Stop Loss for Zero-Momentum Dips & Fast Flash-Dumps
-    // 1. Dead-on-Arrival Fast Cut: If held >= 60s, never gained momentum (peak <= +1.0%), and drops <= -7.5%, cut immediately (saves capital from -25% slide).
-    // 2. If held >= 3m, never gained breakout momentum (peak < +3%), and drops <= -12%, cut immediately.
-    // 3. Fast-Drop Cut: If held <= 120s, never gained momentum (peak < +2%), and drops <= -10%, cut immediately before single-tick gap slippage worsens.
-    const isFastDoaCut = holdDurationSeconds >= 60 && (pos.peakPnlPercent ?? 0) <= 1.0 && newPnlPercent <= -7.5;
-    const isStagnantZeroMomentum = holdDurationMinutes >= 3 && (pos.peakPnlPercent ?? 0) < 3 && newPnlPercent <= -12;
-    const isEarlyFastDrop = holdDurationSeconds <= 120 && (pos.peakPnlPercent ?? 0) < 2 && newPnlPercent <= -10;
+    // 1. Hard Max Loss Cap: If loss <= -$8.00 or <= -10%, cut immediately
+    const isMaxLossExceeded = newPnlUsd <= -8.00 || newPnlPercent <= -10.0;
+    // 2. Dead-on-Arrival Fast Cut: If held >= 30s, never gained momentum (peak <= +1.0%), and drops <= -5.0%, cut immediately.
+    const isFastDoaCut = holdDurationSeconds >= 30 && (pos.peakPnlPercent ?? 0) <= 1.0 && newPnlPercent <= -5.0;
+    const isStagnantZeroMomentum = holdDurationMinutes >= 3 && (pos.peakPnlPercent ?? 0) < 3 && newPnlPercent <= -8.0;
+    const isEarlyFastDrop = holdDurationSeconds <= 90 && (pos.peakPnlPercent ?? 0) < 2 && newPnlPercent <= -7.0;
     const isZeroMomentumDip = isFastDoaCut || isStagnantZeroMomentum || isEarlyFastDrop;
 
-    // Trigger D: Hard Stop Loss Cut or Quick-Cut Stop
-    if (isZeroMomentumDip || newPrice <= pos.stopLossPrice) {
-      const totalReturned = +(pos.investedUsd + newPnlUsd).toFixed(2);
+    // Trigger D: Hard Stop Loss Cut, Quick-Cut Stop, or Max Risk Shield
+    if (isMaxLossExceeded || isZeroMomentumDip || newPrice <= pos.stopLossPrice) {
+      const clampedPnlUsd = Math.max(-8.00, newPnlUsd);
+      const totalReturned = +(pos.investedUsd + clampedPnlUsd).toFixed(2);
       cash = +(cash + Math.max(0, totalReturned)).toFixed(2);
-      realizedPnl = +(realizedPnl + newPnlUsd).toFixed(2);
+      realizedPnl = +(realizedPnl + clampedPnlUsd).toFixed(2);
       losses++;
 
       // Register 45-minute anti-churn cooldown for this token
       registerStopLossCooldown(pos.tokenAddress);
 
-      const isQuickCut = isZeroMomentumDip && newPrice > pos.stopLossPrice;
+      const isQuickCut = (isZeroMomentumDip || isMaxLossExceeded) && newPrice > pos.stopLossPrice;
       const closedRecord: DemoClosedTrade = {
         id: `closed-gem-${Date.now()}-${Math.random().toString(36).substring(7)}`,
         tokenAddress: pos.tokenAddress,
@@ -2268,15 +2280,17 @@ export async function runGemRadarBotTick(
         exitPriceUsd: newPrice,
         investedUsd: pos.investedUsd,
         returnedUsd: Math.max(0, totalReturned),
-        netPnlUsd: newPnlUsd,
-        netPnlPercent: newPnlPercent,
+        netPnlUsd: clampedPnlUsd,
+        netPnlPercent: +((clampedPnlUsd / pos.investedUsd) * 100).toFixed(1),
         multiplier: +(newPrice / pos.entryPriceUsd).toFixed(2),
         exitReason: 'STOP_LOSS',
         exitReasonDetail: isQuickCut
           ? (isFastDoaCut
               ? `Fast Zero-Momentum Cut (${newPnlPercent}%) on Dead-On-Arrival Dump - Saved capital before gap slip`
+              : isMaxLossExceeded
+              ? `Hard Risk Shield Cut (${newPnlPercent}%) - Capped loss at -$8.00 maximum`
               : `Quick-Cut Stop Loss (${newPnlPercent}%) on Zero-Momentum Breakdown - Saved capital before gap slip`)
-          : `Hard Stop-Loss Cut (${newPnlPercent}%) on Gem Radar breakout at $${newPrice}`,
+          : `Hard Stop-Loss Cut (${newPnlPercent}%) on Gem Radar breakout at $${newPrice} - Capped at -$8`,
         peakPriceUsd: pos.peakPriceUsd ?? pos.entryPriceUsd,
         peakPnlPercent: pos.peakPnlPercent ?? Math.max(0, newPnlPercent),
         lowestPriceUsd: pos.lowestPriceUsd ?? pos.entryPriceUsd,
@@ -2301,10 +2315,10 @@ export async function runGemRadarBotTick(
           ? `QUICK-CUT STOP HIT (${newPnlPercent}%) - Cut Gem ${pos.tokenSymbol} at $${newPrice}`
           : `STOP LOSS HIT (${newPnlPercent}%) - Cut Gem ${pos.tokenSymbol} at $${newPrice}`,
         rationale: isQuickCut
-          ? `Quick-Cut Triggered: Position failed to gain breakout momentum (peak was only +${pos.peakPnlPercent ?? 0}%) and broke below -15% support. Cut early to save capital from gap-down slippage. Net Loss: -$${Math.abs(newPnlUsd)}.`
-          : `Automated Stop-Loss triggered below threshold ($${pos.stopLossPrice}). Placed on 45m anti-churn cooldown to prevent re-entering falling knife. Net Loss: -$${Math.abs(newPnlUsd)}.`,
-        outcomePnlUsd: newPnlUsd,
-        outcomePnlPercent: newPnlPercent,
+          ? `Quick-Cut Triggered: Position failed to gain breakout momentum (peak was only +${pos.peakPnlPercent ?? 0}%) and broke below support. Cut early to save capital from gap-down slippage. Net Loss: -$${Math.abs(clampedPnlUsd)}.`
+          : `Automated Stop-Loss triggered below threshold ($${pos.stopLossPrice}). Placed on 45m anti-churn cooldown to prevent re-entering falling knife. Net Loss: -$${Math.abs(clampedPnlUsd)}.`,
+        outcomePnlUsd: clampedPnlUsd,
+        outcomePnlPercent: +((clampedPnlUsd / pos.investedUsd) * 100).toFixed(1),
         improvementLessonTag: isQuickCut ? '[QUICK_CUT_STOP]' : '[LOSS: GEM_BREAKOUT_STOP]',
         improvementNote: isQuickCut ? 'Protected bankroll by cutting failed breakout early.' : 'Capital protected from post-breakout pullback. Cooldown activated.',
       });
@@ -2408,14 +2422,17 @@ export async function runGemRadarBotTick(
         }
 
         // Adaptive entry criteria:
-        // Standard: Confidence >= 80, Liquidity >= $45,000 (Golden Ratio Band)
+        // Standard: Confidence >= 80, Liquidity >= $28,000 (captures fresh pump.fun graduations & high-momentum breakouts)
         // Night Shield (24/7 account during 00:00-06:00 UTC): Confidence >= 90, Liquidity >= $75,000
         const minConviction = isNight ? (profile?.nightShield?.minConviction || 90) : (portfolio.minConvictionThreshold || 80);
-        const minLiquidity = isNight ? (profile?.nightShield?.minLiquidityUsd || 75000) : 45000;
+        const minLiquidity = isNight ? (profile?.nightShield?.minLiquidityUsd || 75000) : 28000;
 
         if (sig.confidenceScore >= minConviction && sig.liquidityUsd >= minLiquidity && sig.priceUsd > 0) {
-          // Dynamic Sizing with Tiered Liquidity Cap (Rug Shield)
+          // Dynamic Sizing with Tiered Liquidity Cap & Unverified Pool Shield
           let allocation = calculateTradeAllocation(portfolio, sig.liquidityUsd);
+          if (sig.suggestedDemoAllocationUsd) {
+            allocation = Math.min(allocation, sig.suggestedDemoAllocationUsd);
+          }
           if (isNight && profile?.nightShield?.maxAllocationUsd) {
             allocation = Math.min(allocation, profile.nightShield.maxAllocationUsd);
           }
@@ -2440,8 +2457,8 @@ export async function runGemRadarBotTick(
             tokenAmount,
             pnlUsd: 0,
             pnlPercent: 0,
-            takeProfitPrice1: spotPrice * 1.10, // High-Velocity Scalp Harvest (+10% target locks in win)
-            takeProfitPrice2: spotPrice * 1.35, // Extended runner TP2 (+35%)
+            takeProfitPrice1: spotPrice * 1.06, // Calibrated +6% Quick Scalp Harvest (locks in win)
+            takeProfitPrice2: spotPrice * 1.30, // Extended runner TP2 (+30%)
             stopLossPrice: spotPrice * (1 + portfolio.stopLossPercent / 100),
             status: 'OPEN',
             alphaScoreAtEntry: sig.confidenceScore,

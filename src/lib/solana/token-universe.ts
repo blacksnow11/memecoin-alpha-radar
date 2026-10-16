@@ -16,6 +16,9 @@ export interface SolanaUniverseToken extends Token {
   bondingCurvePercent?: number;
   isPumpFun?: boolean;
   pairAddress?: string;
+  priceChangeM5?: number;
+  txnsM5Buys?: number;
+  txnsM5Sells?: number;
 }
 
 // 100% Verified Solana Memecoin Mints (Verified on Solscan & DexScreener)
@@ -96,6 +99,12 @@ async function fetchDexScreenerPairsForMints(mints: string[]): Promise<SolanaUni
         const sellers24h = bestPair.txns?.h24?.sells || 0;
         const isPumpFun = bestPair.dexId === 'pumpfun' || addr.toLowerCase().endsWith('pump');
 
+        const priceChangeM5 = typeof bestPair.priceChange?.m5 === 'number'
+          ? bestPair.priceChange.m5
+          : (parseFloat(bestPair.priceChange?.m5 || '0') || 0);
+        const txnsM5Buys = bestPair.txns?.m5?.buys || 0;
+        const txnsM5Sells = bestPair.txns?.m5?.sells || 0;
+
         // Security score calculated objectively: liquidity depth + transaction health
         let securityScore = 80;
         if (liquidityUsd >= 500000) securityScore += 15;
@@ -126,6 +135,9 @@ async function fetchDexScreenerPairsForMints(mints: string[]): Promise<SolanaUni
           isPumpFun,
           url: bestPair.url,
           pairAddress: bestPair.pairAddress,
+          priceChangeM5,
+          txnsM5Buys,
+          txnsM5Sells,
         });
       }
     } catch (err) {
@@ -136,7 +148,7 @@ async function fetchDexScreenerPairsForMints(mints: string[]): Promise<SolanaUni
   return results;
 }
 
-// Multi-Source Discovery: Ingests live trending, top-boosted, verified profiles, and Raydium pools from DexScreener
+// Multi-Source Discovery: Ingests live trending, top-boosted, verified profiles, and Raydium/Pump/Solana pools from DexScreener
 async function fetchLiveDexScreenerCandidateMints(): Promise<string[]> {
   const mints = new Set<string>();
 
@@ -145,6 +157,8 @@ async function fetchLiveDexScreenerCandidateMints(): Promise<string[]> {
     'https://api.dexscreener.com/token-boosts/latest/v1',
     'https://api.dexscreener.com/token-profiles/latest/v1',
     'https://api.dexscreener.com/latest/dex/search?q=raydium',
+    'https://api.dexscreener.com/latest/dex/search?q=solana',
+    'https://api.dexscreener.com/latest/dex/search?q=pump',
   ];
 
   await Promise.allSettled(

@@ -3,7 +3,7 @@
 // Zero fabricated wallet entries, zero fictitious timestamps.
 
 import { PreBreakoutGemSignal, SmartWalletDetectorEvidence } from '../types';
-import { getSolanaTokenUniverse, SolanaUniverseToken } from './token-universe';
+import { getSolanaTokenUniverse, SolanaUniverseToken, VERIFIED_SOLANA_MEMECOIN_MINTS } from './token-universe';
 import { fetchLivePumpFunSwaps } from './helius';
 
 export async function detectPreBreakoutGemSignals(): Promise<PreBreakoutGemSignal[]> {
@@ -21,33 +21,47 @@ export async function detectPreBreakoutGemSignals(): Promise<PreBreakoutGemSigna
     const volume1h = token.volume1hUsd || 0;
     const liquidity = token.liquidityUsd || 0;
 
-    // Strict Entry Guard 1: Liquidity Depth Band ($45,000 to $600,000)
-    // Floor ($45k) rejects fragile microcaps susceptible to instant dev drain rugs (e.g. LIQUID).
-    // Ceiling ($600k) rejects sluggish mega-pools where retail volume causes 0 price action (e.g. ZCAT $1.2M pool).
-    if (liquidity < 45000 || liquidity > 600000) continue;
+    // Strict Entry Guard 1: Liquidity Depth Band ($28,000 to $600,000)
+    // Floor ($28k) captures freshly graduated pump.fun pools ($30k-$35k) while rejecting fragile microcaps.
+    // Ceiling ($600k) rejects sluggish mega-pools where retail volume causes 0 price action.
+    if (liquidity < 28000 || liquidity > 600000) continue;
 
-    // Strict Entry Guard 1b: Pool Maturity Standard (>= 10 minutes old and >= 75 transactions)
-    // Avoids early 0-180s sniper-dump traps while ensuring established community trading history.
-    if (token.ageMinutes < 10) continue;
-    if (((token.buyers24h || 0) + (token.sellers24h || 0)) < 75) continue;
+    // Strict Entry Guard 1b: Pool Maturity Standard (>= 4 minutes old and >= 35 transactions)
+    // Avoids early 0-180s sniper-dump traps while capturing explosive 4m-30m breakout momentum.
+    if (token.ageMinutes < 4) continue;
+    if (((token.buyers24h || 0) + (token.sellers24h || 0)) < 35) continue;
 
-    // Strict Entry Guard 1c: Golden Ratio Turnover Momentum Gate (0.03 <= 5m Volume / Liquidity <= 0.45)
-    // Upper bound (0.45) blocks climax blow-off tops and dev wash-trade dumps (preventing DOA losses like LILANSEM, WAIFU).
-    // Lower bound (0.03) blocks dead/zombie pools with stagnant volume (preventing stagnation timeout losses like MASK, CYBERLEEK).
+    // Strict Entry Guard 1c: Turnover Momentum Gate (0.015 <= 5m Volume / Liquidity <= 0.55)
+    // Upper bound (0.55) blocks climax blow-off tops and dev wash-trade dumps.
+    // Lower bound (0.015) blocks dead/zombie pools with stagnant volume.
     const turnover5mRatio = liquidity > 0 ? volume5m / liquidity : 0;
-    if (turnover5mRatio > 0.45 || turnover5mRatio < 0.03) continue;
+    if (turnover5mRatio > 0.55 || turnover5mRatio < 0.015) continue;
 
     // Strict Entry Guard 1d: Anti-Falling-Knife Guard - Reject tokens down > 10% in 24h
     if (token.priceChange24h !== undefined && token.priceChange24h < -10) continue;
 
+    // Strict Entry Guard 1e: Real-Time 5-Minute Green Candle Filter (Anti-Dead-On-Arrival Dump)
+    // Requires the current 5-minute candle to be green (+0.2% to +25%).
+    // Rejects active red dump candles and already-exhausted climax spikes (> +25%).
+    if (token.priceChangeM5 !== undefined) {
+      if (token.priceChangeM5 < 0.2 || token.priceChangeM5 > 25.0) continue;
+    }
+
+    // Strict Entry Guard 1f: Real-Time 5-Minute Buyer Dominance
+    // Rejects pools where 5m sellers outnumber or equal buyers.
+    if (token.txnsM5Buys !== undefined && token.txnsM5Sells !== undefined && token.txnsM5Sells > 0) {
+      const ratio5m = token.txnsM5Buys / token.txnsM5Sells;
+      if (ratio5m < 1.10) continue;
+    }
+
     // Strict Entry Guard 2: Market Cap Ceiling (max $50M) - Filters out mega-caps
     if (token.marketCap > 50000000) continue;
 
-    // Strict Entry Guard 3: Net Buyer Accumulation Dominance (at least 25% more buyers than sellers)
+    // Strict Entry Guard 3: Net Buyer Accumulation Dominance (at least 20% more buyers than sellers in 24h)
     const buyers = token.buyers24h || 0;
     const sellers = token.sellers24h || 1;
     const buyRatio = +(buyers / Math.max(1, sellers)).toFixed(2);
-    if (buyRatio < 1.25) continue;
+    if (buyRatio < 1.20) continue;
 
     // Cross-reference token address against real live on-chain swaps from Helius
     const matchingSwaps = liveSwaps.filter(
@@ -64,19 +78,22 @@ export async function detectPreBreakoutGemSignals(): Promise<PreBreakoutGemSigna
       capitalEfficiencyMultiplier: 12.5,
     }));
 
-    // Pattern 1: High 5-Minute Volume Velocity Acceleration with Net Buyer Dominance (buyRatio >= 1.25)
-    if (volume5m >= 7500 && buyRatio >= 1.25 && turnover5mRatio >= 0.03 && turnover5mRatio <= 0.45) {
-      // Base conviction score: 75
-      let velocityScore = 75;
-      // Optimal turnover bonus: sweet spot between 8% and 25% of pool liquidity traded in 5m
-      if (turnover5mRatio >= 0.08 && turnover5mRatio <= 0.25) {
+    // Dynamic Sizing Shield: Full $83 for verified/burned-LP pools; Micro $25 for unverified custom pools
+    const isVerifiedSafe = token.isPumpFun || VERIFIED_SOLANA_MEMECOIN_MINTS.some(
+      (m) => m.address.toLowerCase() === token.address.toLowerCase()
+    );
+    const suggestedAllocation = isVerifiedSafe ? 83 : 25;
+
+    // Pattern 1: High 5-Minute Volume Velocity Acceleration with Net Buyer Dominance
+    if (volume5m >= 5000 && buyRatio >= 1.20 && turnover5mRatio >= 0.015 && turnover5mRatio <= 0.55) {
+      let velocityScore = 76;
+      if (turnover5mRatio >= 0.06 && turnover5mRatio <= 0.28) {
         velocityScore += 12;
-      } else if (turnover5mRatio > 0.35) {
-        velocityScore -= 10; // approaching climax penalty
+      } else if (turnover5mRatio > 0.40) {
+        velocityScore -= 10;
       }
-      // Strong buyer dominance bonus
-      if (buyRatio >= 1.50) velocityScore += 8;
-      // On-chain smart wallet presence bonus
+      if (buyRatio >= 1.40) velocityScore += 7;
+      if (token.priceChangeM5 && token.priceChangeM5 > 2.0) velocityScore += 5;
       if (smartWalletsDetected.length > 0) velocityScore += 10;
 
       velocityScore = Math.min(99, Math.max(65, velocityScore));
@@ -95,11 +112,11 @@ export async function detectPreBreakoutGemSignals(): Promise<PreBreakoutGemSigna
         poolCreatedMinutesAgo: token.ageMinutes,
         breakoutProbability: velocityScore,
         patternType: 'VOLUME_ACCELERATION',
-        patternTitle: `5-Min Volume Velocity Surge ($${Math.round(volume5m).toLocaleString()} in 5m)`,
-        patternDescription: `Active DEX trading velocity (${(turnover5mRatio * 100).toFixed(1)}% 5m turnover) backed by $${Math.round(liquidity).toLocaleString()} liquidity pool and ${buyRatio}x buy-to-sell transaction pressure.`,
+        patternTitle: `5-Min Volume Surge ($${Math.round(volume5m).toLocaleString()} in 5m, +${token.priceChangeM5?.toFixed(1) || 0}% 5m)`,
+        patternDescription: `Active DEX trading velocity (${(turnover5mRatio * 100).toFixed(1)}% 5m turnover) backed by $${Math.round(liquidity).toLocaleString()} pool and 5m buyer dominance.`,
         smartWalletsDetected,
         entryWindow: 'BREAKOUT_IMMINENT',
-        suggestedDemoAllocationUsd: 20,
+        suggestedDemoAllocationUsd: suggestedAllocation,
         confidenceScore: velocityScore,
         detectedAt: Date.now(),
         dex: token.dex,
@@ -109,12 +126,12 @@ export async function detectPreBreakoutGemSignals(): Promise<PreBreakoutGemSigna
     }
 
     // Pattern 2: Ground-Floor Micro-Cap Discovery (< $10M MCap with active volume and healthy buy pressure)
-    if (token.marketCap > 0 && token.marketCap < 10000000 && liquidity >= 45000 && volume5m >= 8000 && volume1h >= 25000 && buyRatio >= 1.25 && turnover5mRatio >= 0.03 && turnover5mRatio <= 0.45) {
-      let groundScore = 74;
+    if (token.marketCap > 0 && token.marketCap < 10000000 && liquidity >= 28000 && volume5m >= 5000 && volume1h >= 15000 && buyRatio >= 1.20 && turnover5mRatio >= 0.015 && turnover5mRatio <= 0.55) {
+      let groundScore = 75;
       const liquidityRatio = +((liquidity / token.marketCap) * 100).toFixed(1);
-      if (liquidityRatio >= 10) groundScore += 8;
-      if (token.priceChange24h > 0) groundScore += 6;
-      if (buyRatio >= 1.50) groundScore += 6;
+      if (liquidityRatio >= 8) groundScore += 8;
+      if (token.priceChange24h > 0) groundScore += 5;
+      if (buyRatio >= 1.40) groundScore += 6;
       if (smartWalletsDetected.length > 0) groundScore += 10;
       groundScore = Math.min(98, Math.max(65, groundScore));
 
@@ -136,7 +153,7 @@ export async function detectPreBreakoutGemSignals(): Promise<PreBreakoutGemSigna
         patternDescription: `Sub-$10M market cap with $${Math.round(liquidity).toLocaleString()} pool backing, $${Math.round(volume5m).toLocaleString()} 5m volume, and active DEX swaps.`,
         smartWalletsDetected,
         entryWindow: 'EARLY_ACCUMULATION',
-        suggestedDemoAllocationUsd: 20,
+        suggestedDemoAllocationUsd: suggestedAllocation,
         confidenceScore: groundScore,
         detectedAt: Date.now(),
         dex: token.dex,
@@ -146,12 +163,12 @@ export async function detectPreBreakoutGemSignals(): Promise<PreBreakoutGemSigna
     }
 
     // Pattern 3: Fresh Pump.fun Migration Momentum with Active Trading
-    if (token.isPumpFun && volume5m >= 7000 && buyRatio >= 1.25 && turnover5mRatio >= 0.03 && turnover5mRatio <= 0.45) {
-      let pumpScore = 76;
-      if (token.priceChange24h > 0) pumpScore += 8;
-      if (buyRatio >= 1.50) pumpScore += 6;
+    if (token.isPumpFun && volume5m >= 4500 && buyRatio >= 1.20 && turnover5mRatio >= 0.015 && turnover5mRatio <= 0.55) {
+      let pumpScore = 78;
+      if (token.priceChange24h > 0) pumpScore += 7;
+      if (buyRatio >= 1.40) pumpScore += 6;
       if (smartWalletsDetected.length > 0) pumpScore += 10;
-      pumpScore = Math.min(97, Math.max(65, pumpScore));
+      pumpScore = Math.min(98, Math.max(65, pumpScore));
 
       signals.push({
         id: `sig-pump-${token.symbol.toLowerCase()}-${token.address.slice(0, 6)}`,
@@ -168,10 +185,10 @@ export async function detectPreBreakoutGemSignals(): Promise<PreBreakoutGemSigna
         breakoutProbability: pumpScore,
         patternType: 'PUMP_BONDING_BREAKOUT',
         patternTitle: `Pump.fun Graduated Pool Momentum (+${token.priceChange24h}% 24h)`,
-        patternDescription: `Graduated bonding curve pool migrating liquidity to Raydium CPMM with continuous buyer volume ($${Math.round(volume5m).toLocaleString()} in 5m).`,
+        patternDescription: `Graduated bonding curve pool with continuous buyer volume ($${Math.round(volume5m).toLocaleString()} in 5m).`,
         smartWalletsDetected,
         entryWindow: 'OPTIMAL_DIP',
-        suggestedDemoAllocationUsd: 20,
+        suggestedDemoAllocationUsd: suggestedAllocation,
         confidenceScore: pumpScore,
         detectedAt: Date.now(),
         dex: token.dex,
