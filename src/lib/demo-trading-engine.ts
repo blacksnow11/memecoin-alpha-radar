@@ -75,6 +75,34 @@ export function isTokenInTakeProfitCooldown(tokenAddress: string): { inCooldown:
   return { inCooldown: true, remainingMinutes: Math.ceil(diff / 60000) };
 }
 
+// 2-hour cluster cooldown on token symbol prefixes (Anti-Dev Clone / Copycat Wave Guard)
+// When a dev launches a wave of clone coins (e.g. swordcat, swordlon, swordtrump),
+// registering the prefix prevents jumping into the next clone in the same rug wave.
+const SYMBOL_CLUSTER_COOLDOWN_MS = 2 * 60 * 60 * 1000;
+export const symbolClusterCooldownMap = new Map<string, number>();
+
+export function registerSymbolStopLoss(symbol: string): void {
+  const clean = symbol.toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (clean.length >= 4) {
+    const prefix = clean.slice(0, 4);
+    symbolClusterCooldownMap.set(prefix, Date.now() + SYMBOL_CLUSTER_COOLDOWN_MS);
+  }
+}
+
+export function isSymbolInClusterCooldown(symbol: string): { inCooldown: boolean; prefix: string; remainingMinutes: number } {
+  const clean = symbol.toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (clean.length < 4) return { inCooldown: false, prefix: '', remainingMinutes: 0 };
+  const prefix = clean.slice(0, 4);
+  const expiry = symbolClusterCooldownMap.get(prefix);
+  if (!expiry) return { inCooldown: false, prefix, remainingMinutes: 0 };
+  const diff = expiry - Date.now();
+  if (diff <= 0) {
+    symbolClusterCooldownMap.delete(prefix);
+    return { inCooldown: false, prefix, remainingMinutes: 0 };
+  }
+  return { inCooldown: true, prefix, remainingMinutes: Math.ceil(diff / 60000) };
+}
+
 // =========================================================================
 // Alpha Schedule Tournament Configurations (12am-6am, 2am-6am, 4am-6am, 24/7)
 // Daytime UTC (06:00 to 24:00 UTC) is 100% active on all accounts!
@@ -1935,6 +1963,7 @@ export async function runGemRadarBotTick(
 
       // Emergency 24-hour quarantine cooldown for rug/crash tokens (2 strikes)
       registerStopLossCooldown(pos.tokenAddress, 2);
+      registerSymbolStopLoss(pos.tokenSymbol);
 
       const drainPct = (pos.entryLiquidityUsd && pos.currentLiquidityUsd && pos.entryLiquidityUsd > 0)
         ? Math.round(((pos.entryLiquidityUsd - pos.currentLiquidityUsd) / pos.entryLiquidityUsd) * 100)
@@ -1996,15 +2025,17 @@ export async function runGemRadarBotTick(
       continue;
     }
 
-    // Trigger ST: Stagnation / Time-Decay Exit (30m elapsed with < 4% peak, or 60m with < 10% peak)
-    const isEarlyStagnant = holdDurationMinutes >= 30 && (pos.peakPnlPercent ?? 0) < 4;
-    const isLateStagnant = holdDurationMinutes >= 60 && (pos.peakPnlPercent ?? 0) < 10;
-    if (isEarlyStagnant || isLateStagnant) {
+    // Trigger ST: Stagnation / Time-Decay Exit (12m elapsed with < 2.0% peak, 25m with < 4% peak, or 50m with < 10% peak)
+    const isVelocityStalled = holdDurationMinutes >= 12 && (pos.peakPnlPercent ?? 0) < 2.0 && newPnlPercent <= 0.5;
+    const isEarlyStagnant = holdDurationMinutes >= 25 && (pos.peakPnlPercent ?? 0) < 4;
+    const isLateStagnant = holdDurationMinutes >= 50 && (pos.peakPnlPercent ?? 0) < 10;
+    if (isVelocityStalled || isEarlyStagnant || isLateStagnant) {
       const totalReturned = +(pos.investedUsd + newPnlUsd).toFixed(2);
       cash = +(cash + Math.max(0, totalReturned)).toFixed(2);
       realizedPnl = +(realizedPnl + newPnlUsd).toFixed(2);
       if (newPnlUsd >= 0 || newPnlPercent >= -1.0) wins++; else losses++;
       registerStopLossCooldown(pos.tokenAddress);
+      registerSymbolStopLoss(pos.tokenSymbol);
 
       const closedRecord: DemoClosedTrade = {
         id: `closed-gem-${Date.now()}-${Math.random().toString(36).substring(7)}`,
@@ -2186,6 +2217,7 @@ export async function runGemRadarBotTick(
       } else {
         losses++;
         registerStopLossCooldown(pos.tokenAddress);
+        registerSymbolStopLoss(pos.tokenSymbol);
       }
 
       const closedRecord: DemoClosedTrade = {
@@ -2261,8 +2293,9 @@ export async function runGemRadarBotTick(
       realizedPnl = +(realizedPnl + clampedPnlUsd).toFixed(2);
       losses++;
 
-      // Register 45-minute anti-churn cooldown for this token
+      // Register 45-minute anti-churn cooldown for this token & 2h symbol cluster cooldown
       registerStopLossCooldown(pos.tokenAddress);
+      registerSymbolStopLoss(pos.tokenSymbol);
 
       const isQuickCut = (isZeroMomentumDip || isMaxLossExceeded) && newPrice > pos.stopLossPrice;
       const closedRecord: DemoClosedTrade = {
@@ -2417,6 +2450,25 @@ export async function runGemRadarBotTick(
             rationale: `Token recently hit Take-Profit / Trailing Stop. Blacklisted for 6 hours to prevent buying the exhausted top of a finished pump cycle.`,
             improvementLessonTag: '[ANTI_TOP_FOMO_COOLDOWN]',
             improvementNote: 'Capital protected from post-pump exhaustion and secondary dump tops.',
+          });
+          continue;
+        }
+
+        // Anti-Clone Symbol Family Cluster Cooldown Check
+        const clusterCheck = isSymbolInClusterCooldown(sig.tokenSymbol);
+        if (clusterCheck.inCooldown) {
+          newLogs.unshift({
+            id: `log-gem-skip-cluster-${Date.now()}`,
+            timestamp: Date.now(),
+            type: 'EVALUATION_REJECT',
+            tokenSymbol: sig.tokenSymbol,
+            tokenAddress: sig.tokenAddress,
+            chain: 'solana',
+            convictionScore: 25,
+            action: `SKIPPED ${sig.tokenSymbol}: Anti-Clone Cluster Cooldown Active (${clusterCheck.remainingMinutes}m remaining on "${clusterCheck.prefix.toUpperCase()}..." family)`,
+            rationale: `Recent stop-loss occurred on a token in the same name family. Blacklisted for 2 hours to avoid dev copycat/clone rug waves.`,
+            improvementLessonTag: '[ANTI_CLONE_CLUSTER_GUARD]',
+            improvementNote: 'Capital protected from dev copycat wave churn.',
           });
           continue;
         }

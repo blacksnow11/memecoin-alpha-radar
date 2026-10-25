@@ -47,11 +47,17 @@ export async function detectPreBreakoutGemSignals(): Promise<PreBreakoutGemSigna
       if (token.priceChangeM5 < 0.2 || token.priceChangeM5 > 25.0) continue;
     }
 
-    // Strict Entry Guard 1f: Real-Time 5-Minute Buyer Dominance
-    // Rejects pools where 5m sellers outnumber or equal buyers.
+    // Strict Entry Guard 1f: Distributed 5-Minute Buyer Participation (Anti-Wash-Trade / Anti-Bundle Guard)
+    // Dev wash trades typically create $5k-$15k 5m volume with only 2-5 large bundle transactions.
+    // Organic breakouts have distributed buy participation from multiple independent market participants.
+    if (token.txnsM5Buys !== undefined && token.txnsM5Buys < 14) continue;
+    const total5mTxns = (token.txnsM5Buys || 0) + (token.txnsM5Sells || 0);
+    if (total5mTxns > 0 && total5mTxns < 20) continue;
+
+    // Real-Time 5-Minute Buyer Dominance: at least 15% more buys than sells in 5m
     if (token.txnsM5Buys !== undefined && token.txnsM5Sells !== undefined && token.txnsM5Sells > 0) {
       const ratio5m = token.txnsM5Buys / token.txnsM5Sells;
-      if (ratio5m < 1.10) continue;
+      if (ratio5m < 1.15) continue;
     }
 
     // Strict Entry Guard 2: Market Cap Ceiling (max $50M) - Filters out mega-caps
@@ -85,7 +91,7 @@ export async function detectPreBreakoutGemSignals(): Promise<PreBreakoutGemSigna
     const suggestedAllocation = isVerifiedSafe ? 83 : 25;
 
     // Pattern 1: High 5-Minute Volume Velocity Acceleration with Net Buyer Dominance
-    if (volume5m >= 5000 && buyRatio >= 1.20 && turnover5mRatio >= 0.015 && turnover5mRatio <= 0.55) {
+    if (volume5m >= 6000 && buyRatio >= 1.25 && turnover5mRatio >= 0.02 && turnover5mRatio <= 0.50) {
       let velocityScore = 76;
       if (turnover5mRatio >= 0.06 && turnover5mRatio <= 0.28) {
         velocityScore += 12;
@@ -126,7 +132,7 @@ export async function detectPreBreakoutGemSignals(): Promise<PreBreakoutGemSigna
     }
 
     // Pattern 2: Ground-Floor Micro-Cap Discovery (< $10M MCap with active volume and healthy buy pressure)
-    if (token.marketCap > 0 && token.marketCap < 10000000 && liquidity >= 28000 && volume5m >= 5000 && volume1h >= 15000 && buyRatio >= 1.20 && turnover5mRatio >= 0.015 && turnover5mRatio <= 0.55) {
+    if (token.marketCap > 0 && token.marketCap < 10000000 && liquidity >= 28000 && volume5m >= 6000 && volume1h >= 15000 && buyRatio >= 1.25 && turnover5mRatio >= 0.02 && turnover5mRatio <= 0.50) {
       let groundScore = 75;
       const liquidityRatio = +((liquidity / token.marketCap) * 100).toFixed(1);
       if (liquidityRatio >= 8) groundScore += 8;
