@@ -10,7 +10,7 @@ import {
 } from './demo-trading-engine';
 import { BotAccountProfile, DecisionLog, DemoPortfolio, DemoPosition } from './types';
 
-export const CURRENT_STATE_VERSION = 18;
+export const CURRENT_STATE_VERSION = 19;
 
 export interface StoredBotState {
   version?: number;
@@ -104,9 +104,9 @@ export function loadBotStateFromDisk(): StoredBotState {
       const raw = fs.readFileSync(targetFile, 'utf-8');
       const parsed = JSON.parse(raw);
       if (parsed && parsed.copyBot && parsed.gemRadarBot) {
-        // Auto-Migration & Reset: Version 17 initializes V4.1 clean-slate reset with Asymmetric Risk Shield
+        // Auto-Migration & Reset: Version 19 initializes V4.3 clean-slate reset with Early Ignition & Resilient Growth Engine
         if (!parsed.version || parsed.version < CURRENT_STATE_VERSION || !parsed.tournamentAccounts) {
-          console.log(`[BotStorage] Auto-migrating state to Version ${CURRENT_STATE_VERSION}: clean-slate reset with V4.2 Anti-Wash Volume Guard & Symbol Cluster Defense`);
+          console.log(`[BotStorage] Auto-migrating state to Version ${CURRENT_STATE_VERSION}: clean-slate reset with V4.3 Early Ignition & Resilient Growth Engine`);
           const fresh = getInitialState();
           memoryState = fresh;
           saveBotStateToDisk(fresh);

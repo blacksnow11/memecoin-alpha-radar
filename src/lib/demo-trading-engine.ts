@@ -1947,9 +1947,9 @@ export async function runGemRadarBotTick(
       }
     }
 
-    // Trigger CB: Circuit Breaker (Flash Rug / Liquidity Pull Detection - 10% Fast-Cut & -$8 Hard Cap)
+    // Trigger CB: Circuit Breaker (Flash Rug / Liquidity Pull Detection - 25% Fast-Cut & -$8 Hard Cap)
     const isLiqDrained = !!(pos.entryLiquidityUsd && pos.currentLiquidityUsd && pos.entryLiquidityUsd > 0 &&
-      ((pos.entryLiquidityUsd - pos.currentLiquidityUsd) / pos.entryLiquidityUsd >= 0.10));
+      ((pos.entryLiquidityUsd - pos.currentLiquidityUsd) / pos.entryLiquidityUsd >= 0.25));
     const isLiqBelowFloor = !!(pos.currentLiquidityUsd !== undefined && pos.currentLiquidityUsd > 0 && pos.currentLiquidityUsd < 8000);
     const isFlashCrash = newPnlPercent <= -35;
 
@@ -2025,10 +2025,10 @@ export async function runGemRadarBotTick(
       continue;
     }
 
-    // Trigger ST: Stagnation / Time-Decay Exit (12m elapsed with < 2.0% peak, 25m with < 4% peak, or 50m with < 10% peak)
-    const isVelocityStalled = holdDurationMinutes >= 12 && (pos.peakPnlPercent ?? 0) < 2.0 && newPnlPercent <= 0.5;
-    const isEarlyStagnant = holdDurationMinutes >= 25 && (pos.peakPnlPercent ?? 0) < 4;
-    const isLateStagnant = holdDurationMinutes >= 50 && (pos.peakPnlPercent ?? 0) < 10;
+    // Trigger ST: Stagnation / Time-Decay Exit (25m elapsed with < 2.5% peak and negative PnL, 40m with < 4% peak, or 60m with < 10% peak)
+    const isVelocityStalled = holdDurationMinutes >= 25 && (pos.peakPnlPercent ?? 0) < 2.5 && newPnlPercent <= 0.0;
+    const isEarlyStagnant = holdDurationMinutes >= 40 && (pos.peakPnlPercent ?? 0) < 4;
+    const isLateStagnant = holdDurationMinutes >= 60 && (pos.peakPnlPercent ?? 0) < 10;
     if (isVelocityStalled || isEarlyStagnant || isLateStagnant) {
       const totalReturned = +(pos.investedUsd + newPnlUsd).toFixed(2);
       cash = +(cash + Math.max(0, totalReturned)).toFixed(2);
@@ -2279,10 +2279,10 @@ export async function runGemRadarBotTick(
     // Trigger QC: Quick-Cut Stop Loss for Zero-Momentum Dips & Fast Flash-Dumps
     // 1. Hard Max Loss Cap: If loss <= -$8.00 or <= -10%, cut immediately
     const isMaxLossExceeded = newPnlUsd <= -8.00 || newPnlPercent <= -10.0;
-    // 2. Dead-on-Arrival Fast Cut: If held >= 30s, never gained momentum (peak <= +1.0%), and drops <= -5.0%, cut immediately.
-    const isFastDoaCut = holdDurationSeconds >= 30 && (pos.peakPnlPercent ?? 0) <= 1.0 && newPnlPercent <= -5.0;
-    const isStagnantZeroMomentum = holdDurationMinutes >= 3 && (pos.peakPnlPercent ?? 0) < 3 && newPnlPercent <= -8.0;
-    const isEarlyFastDrop = holdDurationSeconds <= 90 && (pos.peakPnlPercent ?? 0) < 2 && newPnlPercent <= -7.0;
+    // 2. Dead-on-Arrival Fast Cut: If held >= 60s, never gained momentum (peak <= +1.0%), and drops <= -7.0%, cut immediately.
+    const isFastDoaCut = holdDurationSeconds >= 60 && (pos.peakPnlPercent ?? 0) <= 1.0 && newPnlPercent <= -7.0;
+    const isStagnantZeroMomentum = holdDurationMinutes >= 4 && (pos.peakPnlPercent ?? 0) < 3 && newPnlPercent <= -8.5;
+    const isEarlyFastDrop = holdDurationSeconds <= 120 && (pos.peakPnlPercent ?? 0) < 2 && newPnlPercent <= -8.0;
     const isZeroMomentumDip = isFastDoaCut || isStagnantZeroMomentum || isEarlyFastDrop;
 
     // Trigger D: Hard Stop Loss Cut, Quick-Cut Stop, or Max Risk Shield
