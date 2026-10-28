@@ -1,5 +1,6 @@
 import { getBotState, saveBotStateToDisk, StoredBotState, CURRENT_STATE_VERSION } from './bot-storage';
 import { createDefaultTournamentAccounts, runCopyBotTick, runGemRadarBotTick } from './demo-trading-engine';
+import { detectPreBreakoutGemSignals } from './solana/gem-radar';
 import { BotAccountProfile, ServerWorkerStatus } from './types';
 
 const TICK_INTERVAL_MS = 20000; // 20 seconds
@@ -21,7 +22,10 @@ export async function executeBotTick(): Promise<StoredBotState> {
     const currentTourney = currentState.tournamentAccounts || createDefaultTournamentAccounts();
     const tourneyAccountIds = Object.keys(currentTourney);
 
-    // Concurrently evaluate Whale Copy Bot & All 4 Gem Radar Tournament Accounts
+    // Fetch live signals ONCE per tick (shared across all accounts to guarantee deterministic signal parity and prevent API rate limits)
+    const liveSignals = await detectPreBreakoutGemSignals().catch(() => []);
+
+    // Concurrently evaluate Whale Copy Bot & All 4 Gem Radar Tournament Accounts with identical signals
     const [copyRes, ...tourneyEvaluations] = await Promise.all([
       runCopyBotTick(
         currentState.copyBot.portfolio,
@@ -35,7 +39,8 @@ export async function executeBotTick(): Promise<StoredBotState> {
           acc.positions,
           acc.logs,
           undefined,
-          acc
+          acc,
+          liveSignals
         );
       }),
     ]);

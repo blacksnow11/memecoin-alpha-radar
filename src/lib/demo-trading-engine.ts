@@ -1856,7 +1856,8 @@ export async function runGemRadarBotTick(
   positions: DemoPosition[],
   logs: DecisionLog[],
   closedTradesInput?: DemoClosedTrade[],
-  profile?: BotAccountProfile
+  profile?: BotAccountProfile,
+  sharedLiveSignals?: PreBreakoutGemSignal[]
 ): Promise<{
   updatedPortfolio: DemoPortfolio;
   updatedPositions: DemoPosition[];
@@ -2405,7 +2406,7 @@ export async function runGemRadarBotTick(
 
   if (!isSleeping && activePositionCount < portfolio.maxConcurrentPositions && cash >= 10) {
     try {
-      const liveSignals = await detectPreBreakoutGemSignals();
+      const liveSignals = sharedLiveSignals || (await detectPreBreakoutGemSignals());
       let entriesThisTick = 0;
       const MAX_GEM_ENTRIES_PER_TICK = 1; // Pacing throttle: max 1 new position per 20s tick
 
